@@ -1,0 +1,6 @@
+# Guardian Phase 1 runs on the Python 3.9+ standard library ONLY
+# (http.server, sqlite3, threading, urllib, zoneinfo) — no install step needed.
+#
+# Phase 2 (real telephony) may add:
+#   httpx        # Telnyx / 3CX REST calls
+#   fastapi + uvicorn   # if we move off the stdlib HTTP server
