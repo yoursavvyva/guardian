@@ -93,6 +93,7 @@ class ThreeCXProvider(CallProvider):
             "confirm": settings.confirm_enabled,        # collect a key press
             "confirmDigit": settings.okay_digit,        # "okay" key -> confirmed=true
             "acceptDigits": [settings.okay_digit, settings.needs_call_digit],
+            "confirmWindow1Ms": settings.confirm_window1_ms,  # 15s before the re-prompt
             "confirmReprompt": settings.call_reprompt,  # spoken if no key in the first window
             # Audible acknowledgment spoken for the pressed key before hangup.
             "confirmAck": {

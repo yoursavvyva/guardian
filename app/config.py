@@ -212,6 +212,15 @@ class Settings:
         except ValueError:
             return 30
 
+    @property
+    def confirm_window1_ms(self):
+        # First listening window after the menu (ms) before the re-prompt. 15s gives
+        # Mom time to open the keypad + press so she usually won't hear the re-prompt.
+        try:
+            return int(env("GUARDIAN_CONFIRM_WINDOW1_MS", "15000"))
+        except ValueError:
+            return 15000
+
     # ---- ANGEL-06: call-back reminders (when Mom presses 2 / needs_darcee) ----
     @property
     def ack_reminder_minutes(self):
