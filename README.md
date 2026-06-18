@@ -8,7 +8,7 @@ API — PMC never reads Guardian's database directly.
 **Guardian is NOT Max.** It is completely separate. Max is untouched.
 
 ## Phase 1 scope
-- Configurable schedule (default **11:00, 16:00, 20:30** America/New_York).
+- Configurable schedule — pilot = **two daily checks: 11:00 AM + 6:00 PM** America/New_York.
 - Retry ladder: extension → wait 20m → extension → wait 20m → **cell** → escalate.
 - Telegram notifications (started / calling / answered / missed+retry / escalation).
 - **Mock call provider by default — no real calls are placed.** Telnyx & 3CX are
