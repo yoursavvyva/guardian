@@ -50,14 +50,19 @@ def _handle_callback(cb):
         acked = bool(ci and ci.get("acknowledged"))
         if cb_id:
             try:
-                _api("answerCallbackQuery", callback_query_id=cb_id,
-                     text="✅ Got it — thank you!" if acked else "Already marked as called.")
+                # show_alert => a clear popup she must dismiss, not an easy-to-miss toast.
+                _api("answerCallbackQuery", callback_query_id=cb_id, show_alert="true",
+                     text="✅ Thank you — I've noted you called Mom. I'll stop reminding you."
+                          if acked else "Already marked as called. 👍")
             except Exception:
                 pass
-        if acked and msg.get("message_id"):
+        # Always strip the button + annotate the message so it visibly resolves (whether
+        # this tap or an earlier one did the ack) — empty inline_keyboard removes it.
+        if msg.get("message_id"):
             try:
                 _api("editMessageText", chat_id=chat, message_id=msg["message_id"],
-                     text=(msg.get("text") or "Angel call-back") + "\n\n✅ Marked as called.")
+                     text=(msg.get("text") or "Angel call-back") + "\n\n✅ Marked as called.",
+                     reply_markup=json.dumps({"inline_keyboard": []}))
             except Exception:
                 pass
 
