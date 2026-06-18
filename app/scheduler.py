@@ -97,19 +97,31 @@ def _run_attempt(checkin):
         telegram_notify.send(f"✅ Guardian: Mom answered the {label} check (attempt {attempt_number}). All good. 💚")
         return
 
-    # not answered (missed or failed)
+    # not answered — distinguish a genuine no-answer from a TECHNICAL failure.
+    technical = res.status == "failed"
     if attempt_number >= settings.max_attempts:
         storage.update_checkin(checkin["id"], final_status=CheckinStatus.ESCALATED,
                                escalation_sent=1, next_attempt_at=None)
-        telegram_notify.send(
-            f"🚨 Guardian could not reach Mom after {settings.max_attempts} attempts "
-            f"(check {label}). Check Alexa/camera or call her directly.")
+        if technical:
+            telegram_notify.send(
+                f"🚨 Guardian couldn't COMPLETE the wellness calls (technical issue: {res.error}) "
+                f"after {settings.max_attempts} attempts (check {label}). This looks like a phone/system "
+                f"problem, not necessarily Mom — please check on her directly and check Guardian.")
+        else:
+            telegram_notify.send(
+                f"🚨 Guardian could not reach Mom after {settings.max_attempts} attempts "
+                f"(check {label}). Check Alexa/camera or call her directly.")
     else:
         retry_at = (_now() + timedelta(minutes=settings.retry_minutes))
         storage.update_checkin(checkin["id"], next_attempt_at=retry_at.isoformat())
         when = "now" if settings.retry_minutes <= 0 else f"in {settings.retry_minutes} min"
-        telegram_notify.send(
-            f"⚠️ Guardian: Mom didn't answer (attempt {attempt_number}, {res.status}). Retrying {when}.")
+        if technical:
+            telegram_notify.send(
+                f"⚠️ Guardian: couldn't complete the call (technical: {res.error}, attempt {attempt_number}). "
+                f"Retrying {when}.")
+        else:
+            telegram_notify.send(
+                f"⚠️ Guardian: Mom didn't answer (attempt {attempt_number}). Retrying {when}.")
 
 
 def _label(scheduled_iso):

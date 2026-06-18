@@ -98,18 +98,34 @@ class ThreeCXProvider(CallProvider):
         # poll for outcome
         deadline = _time.time() + settings.ring_timeout + 20
         answered = False
+        reason = None
+        state = None
         while _time.time() < deadline:
             _time.sleep(3)
             try:
                 with urllib.request.urlopen(base + "/api/call/" + call_id, timeout=10) as r:
-                    st = json.loads(r.read().decode())
+                    resp = json.loads(r.read().decode())
+                st = resp.get("data", resp)  # status route wraps fields under "data"
             except Exception:
                 continue
             if st.get("answeredAt"):
                 answered = True
-            if st.get("state") in ("completed", "failed", "ended"):
+            if st.get("failureReason"):
+                reason = st.get("failureReason")
+            state = (st.get("state") or "").lower()
+            if state in ("completed", "failed", "ended"):
                 break
-        return CallResult("answered" if answered else "missed", provider="3cx")
+
+        if answered:
+            return CallResult("answered", provider="3cx")
+        # Distinguish a genuine no-answer (Mom didn't pick up) from a TECHNICAL failure.
+        no_answer = {"no_answer", "no-answer", "busy", "timeout", "local_hangup", "remote_hangup"}
+        r = (reason or "").lower()
+        if r and r not in no_answer:
+            return CallResult("failed", error=reason, provider="3cx")  # technical — NOT "Mom missed"
+        if not r and state == "failed":
+            return CallResult("failed", error="call_failed", provider="3cx")
+        return CallResult("missed", provider="3cx")
 
 
 def get_provider() -> CallProvider:
