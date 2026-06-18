@@ -175,6 +175,18 @@ class Settings:
                    "Press 2 if you need Darcee to call you.")
 
     @property
+    def ack_okay(self):
+        # Spoken right after Mom presses 1, before hangup (audible confirmation).
+        return env("GUARDIAN_ACK_OKAY",
+                   "Thank you, Mom. I'm glad you're okay. Have a wonderful day.")
+
+    @property
+    def ack_needs_call(self):
+        # Spoken right after Mom presses 2, before hangup (audible confirmation).
+        return env("GUARDIAN_ACK_NEEDS_CALL",
+                   "Thank you, Mom. I'll let Darcee know you'd like a call. Talk to you later.")
+
+    @property
     def confirm_enabled(self):
         return env("GUARDIAN_CONFIRM", "true").lower() != "false"
 

@@ -35,11 +35,14 @@ class _FakeResp(io.BytesIO):
     def __exit__(self, *a): return False
 
 
-def _mock_voiceapp(status_data):
-    """Patch urllib so POST returns a callId and GET returns canned call status."""
+def _mock_voiceapp(status_data, captured=None):
+    """Patch urllib so POST returns a callId and GET returns canned call status.
+    If `captured` (dict) is passed, the POST request body is stored under 'body'."""
     def _open(req, timeout=0):
         url = req if isinstance(req, str) else req.full_url
         if url.endswith("/api/outbound-call"):
+            if captured is not None and not isinstance(req, str):
+                captured["body"] = json.loads(req.data.decode())
             return _FakeResp(json.dumps({"success": True, "callId": "t"}).encode())
         return _FakeResp(json.dumps({"success": True, "data": status_data}).encode())
     urllib.request.urlopen = _open
@@ -63,6 +66,19 @@ def test_provider_classification():
         _mock_voiceapp(data)
         res = cp.ThreeCXProvider().place_call("test", "39510")
         assert res.status == expected, f"{name}: got {res.status}, expected {expected}"
+
+
+# ---- 1b. provider sends the menu contract + audible acknowledgments ----
+def test_provider_payload_has_confirm_ack():
+    captured = {}
+    _mock_voiceapp({"state": "completed", "answeredAt": "x", "confirmed": True, "confirmDigit": "1"}, captured)
+    cp.ThreeCXProvider().place_call("test", "39510")
+    b = captured["body"]
+    assert b["mode"] == "announce", b.get("mode")
+    assert b["acceptDigits"] == ["1", "2"], b.get("acceptDigits")
+    ack = b.get("confirmAck") or {}
+    assert ack.get("1") == "Thank you, Mom. I'm glad you're okay. Have a wonderful day.", ack
+    assert ack.get("2") == "Thank you, Mom. I'll let Darcee know you'd like a call. Talk to you later.", ack
 
 
 # ---- 2. mock provider returns all five states ----

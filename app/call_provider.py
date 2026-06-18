@@ -94,6 +94,11 @@ class ThreeCXProvider(CallProvider):
             "confirmDigit": settings.okay_digit,        # "okay" key -> confirmed=true
             "acceptDigits": [settings.okay_digit, settings.needs_call_digit],
             "confirmReprompt": settings.call_reprompt,  # spoken if no key in the first window
+            # Audible acknowledgment spoken for the pressed key before hangup.
+            "confirmAck": {
+                settings.okay_digit: settings.ack_okay,
+                settings.needs_call_digit: settings.ack_needs_call,
+            },
         }
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
