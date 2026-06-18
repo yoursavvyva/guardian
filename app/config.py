@@ -50,6 +50,20 @@ class Settings:
         return [s.strip() for s in raw.split(",") if s.strip()]
 
     @property
+    def start_date(self):
+        # Optional go-live date (YYYY-MM-DD, local tz). No scheduled checks fire on a
+        # date before this — lets us arm the schedule now but begin calls on a later day.
+        raw = (env("GUARDIAN_START_DATE", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            from datetime import date
+            y, m, d = [int(x) for x in raw.split("-")]
+            return date(y, m, d)
+        except (ValueError, TypeError):
+            return None
+
+    @property
     def retry_minutes(self):
         try:
             return int(env("GUARDIAN_RETRY_MINUTES", "20"))

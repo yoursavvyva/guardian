@@ -56,10 +56,17 @@ def _scheduled_today(now=None):
     return out
 
 
+def _active(now=None):
+    """False before the configured go-live date (so no real calls fire early)."""
+    sd = settings.start_date
+    return sd is None or (now or _now()).date() >= sd
+
+
 def next_scheduled_check(now=None):
     now = now or _now()
+    sd = settings.start_date
     candidates = _scheduled_today(now) + [d + timedelta(days=1) for d in _scheduled_today(now)]
-    future = sorted(d for d in candidates if d > now)
+    future = sorted(d for d in candidates if d > now and (sd is None or d.date() >= sd))
     return future[0].isoformat() if future else None
 
 
@@ -222,8 +229,8 @@ def _process_ack_reminders(now=None):
 # ---- tick ----
 def _tick():
     now = _now()
-    # 1) fire due scheduled checks (within the recent window only)
-    for sched in _scheduled_today(now):
+    # 1) fire due scheduled checks (within the recent window only) — not before go-live date
+    for sched in (_scheduled_today(now) if _active(now) else []):
         if sched <= now and (now - sched) <= timedelta(minutes=FIRE_WINDOW_MIN):
             if not storage.checkin_exists_for(sched.isoformat()):
                 cid = storage.create_checkin(sched.isoformat())

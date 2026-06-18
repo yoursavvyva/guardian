@@ -175,6 +175,21 @@ def test_acknowledge_and_confirm_sends_once():
         scheduler.telegram_notify.send = orig
 
 
+def test_start_date_gate():
+    import os as _os
+    from datetime import timedelta
+    try:
+        future = (scheduler._now() + timedelta(days=1)).date().isoformat()
+        past = (scheduler._now() - timedelta(days=1)).date().isoformat()
+        _os.environ["GUARDIAN_START_DATE"] = future
+        assert scheduler._active() is False, "must be inactive before go-live date"
+        assert scheduler.next_scheduled_check() is not None, "next check should still resolve (future day)"
+        _os.environ["GUARDIAN_START_DATE"] = past
+        assert scheduler._active() is True, "active on/after go-live date"
+    finally:
+        _os.environ.pop("GUARDIAN_START_DATE", None)
+
+
 def test_quiet_hours_window():
     from datetime import datetime
     tz = scheduler._tz()
