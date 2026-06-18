@@ -139,6 +139,12 @@ class Settings:
             return 5060
 
     @property
+    def threecx_outbound_proxy(self):
+        # The local 3CX SBC (Docker `3cxsbc`) that Angel registers/sends SIP through;
+        # it tunnels to the 3CX cloud. Same path Max/Claude Phone uses.
+        return env("THREECX_OUTBOUND_PROXY", "")
+
+    @property
     def db_path(self):
         return env("GUARDIAN_DB", os.path.join(HERE, "data", "guardian.db"))
 
