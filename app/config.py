@@ -144,6 +144,29 @@ class Settings:
         # it tunnels to the 3CX cloud. Same path Max/Claude Phone uses.
         return env("THREECX_OUTBOUND_PROXY", "")
 
+    # ---- voice-app (shared Claude-Phone outbound-call API; Angel placed real calls here) ----
+    @property
+    def voice_app_url(self):
+        return env("VOICE_APP_URL", "http://127.0.0.1:3030")
+
+    @property
+    def angel_device(self):
+        # Device name/extension registered in the voice-app's devices.json.
+        return env("ANGEL_DEVICE", "Angel")
+
+    @property
+    def call_message(self):
+        return env("GUARDIAN_CALL_MESSAGE",
+                   "Hi Mom, it's Angel just checking in to make sure you're doing okay. "
+                   "If you can hear this, you're all set. Love you.")
+
+    @property
+    def ring_timeout(self):
+        try:
+            return int(env("GUARDIAN_RING_SECONDS", "30"))
+        except ValueError:
+            return 30
+
     @property
     def db_path(self):
         return env("GUARDIAN_DB", os.path.join(HERE, "data", "guardian.db"))

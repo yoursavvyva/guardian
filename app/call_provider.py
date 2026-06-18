@@ -63,13 +63,53 @@ class TelnyxProvider(CallProvider):
 
 
 class ThreeCXProvider(CallProvider):
-    """Scaffold for 3CX Call Control API outbound calls. Phase 1: NOT wired."""
+    """Places real calls through the shared Claude-Phone voice-app outbound API,
+    registered as Angel's 3CX extension (same plumbing Max uses). Dials Mom's
+    extension (internal) or her cell (external) and reports answered/missed by
+    watching the call's answeredAt."""
     name = "3cx"
 
-    def place_call(self, target_type, target_value) -> CallResult:
-        if not (settings.threecx_extension and settings.threecx_auth_id and settings.threecx_password):
-            return CallResult("failed", error="3cx_not_configured", provider="3cx")
-        return CallResult("failed", error="3cx_not_implemented_phase1", provider="3cx")
+    def place_call(self, target_type, target_value, message=None) -> CallResult:
+        import json
+        import time as _time
+        import urllib.request
+        base = settings.voice_app_url.rstrip("/")
+        if not base:
+            return CallResult("failed", error="voice_app_url_not_set", provider="3cx")
+        payload = {
+            "to": str(target_value),
+            "message": message or settings.call_message,
+            "mode": "announce",
+            "device": settings.angel_device,
+            "timeoutSeconds": settings.ring_timeout,
+        }
+        try:
+            req = urllib.request.Request(base + "/api/outbound-call",
+                                         data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                started = json.loads(r.read().decode())
+            call_id = started.get("callId")
+            if not started.get("success") or not call_id:
+                return CallResult("failed", error=str(started)[:120], provider="3cx")
+        except Exception as e:
+            return CallResult("failed", error="dial_failed:" + str(e)[:100], provider="3cx")
+
+        # poll for outcome
+        deadline = _time.time() + settings.ring_timeout + 20
+        answered = False
+        while _time.time() < deadline:
+            _time.sleep(3)
+            try:
+                with urllib.request.urlopen(base + "/api/call/" + call_id, timeout=10) as r:
+                    st = json.loads(r.read().decode())
+            except Exception:
+                continue
+            if st.get("answeredAt"):
+                answered = True
+            if st.get("state") in ("completed", "failed", "ended"):
+                break
+        return CallResult("answered" if answered else "missed", provider="3cx")
 
 
 def get_provider() -> CallProvider:

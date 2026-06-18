@@ -171,6 +171,18 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = telegram_notify.send(
                 body.get("text") or "🛡️ Guardian test message — Telegram is wired up correctly.")
             return self._send(200, {"ok": ok, "detail": detail})
+        if path == "/guardian/test/call":
+            # Places ONE REAL call via the voice-app (as Angel) to the given number,
+            # regardless of CALL_PROVIDER. Use this to test against YOUR number first.
+            to = (body.get("to") or "").strip()
+            if not to:
+                return self._send(400, {"error": "provide 'to' (a number or extension to test-call)"})
+            from app.call_provider import ThreeCXProvider
+            from app.config import mask_phone
+            telegram_notify.send(f"🧪 Angel: placing a TEST call to {mask_phone(to)}…")
+            res = ThreeCXProvider().place_call("test", to, message=body.get("message"))
+            telegram_notify.send(f"🧪 Angel test call → {res.status}{(' (' + res.error + ')') if res.error else ''}.")
+            return self._send(200, {"ok": res.status == "answered", "status": res.status, "error": res.error})
         return self._send(404, {"error": "not found"})
 
 
