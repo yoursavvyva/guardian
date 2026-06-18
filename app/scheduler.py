@@ -91,22 +91,31 @@ def _run_attempt(checkin):
     storage.update_checkin(checkin["id"], attempt_count=attempt_number)
 
     label = _label(checkin["scheduled_time"])
-    if res.status == AttemptStatus.ANSWERED:
+    # Phase 2.5: ONLY an active confirmation (she pressed 1) is a wellness pass.
+    if res.status == "confirmed_ok":
         storage.update_checkin(checkin["id"], final_status=CheckinStatus.ANSWERED,
                                answered_attempt_number=attempt_number, next_attempt_at=None)
-        telegram_notify.send(f"✅ Guardian: Mom answered the {label} check (attempt {attempt_number}). All good. 💚")
+        telegram_notify.send(f"💚 Guardian: Mom confirmed she's okay (pressed 1) on the {label} check. All good.")
         return
 
-    # not answered — distinguish a genuine no-answer from a TECHNICAL failure.
+    # Everything else advances the ladder. Distinguish the cause for clear wording:
+    #   answered_unconfirmed → connected but no key press (voicemail/auto-answer/no input)
+    #   failed               → technical/system problem (NOT "Mom missed")
+    #   missed               → genuine no-answer
     technical = res.status == "failed"
+    unconfirmed = res.status == "answered_unconfirmed"
     if attempt_number >= settings.max_attempts:
         storage.update_checkin(checkin["id"], final_status=CheckinStatus.ESCALATED,
                                escalation_sent=1, next_attempt_at=None)
         if technical:
             telegram_notify.send(
                 f"🚨 Guardian couldn't COMPLETE the wellness calls (technical issue: {res.error}) "
-                f"after {settings.max_attempts} attempts (check {label}). This looks like a phone/system "
-                f"problem, not necessarily Mom — please check on her directly and check Guardian.")
+                f"after {settings.max_attempts} attempts (check {label}). Likely a phone/system problem, "
+                f"not necessarily Mom — please check on her directly and check Guardian.")
+        elif unconfirmed:
+            telegram_notify.send(
+                f"🚨 Guardian reached the line for the {label} check but Mom never CONFIRMED she's okay "
+                f"(no key press) after {settings.max_attempts} attempts. Please check on her directly.")
         else:
             telegram_notify.send(
                 f"🚨 Guardian could not reach Mom after {settings.max_attempts} attempts "
@@ -118,6 +127,10 @@ def _run_attempt(checkin):
         if technical:
             telegram_notify.send(
                 f"⚠️ Guardian: couldn't complete the call (technical: {res.error}, attempt {attempt_number}). "
+                f"Retrying {when}.")
+        elif unconfirmed:
+            telegram_notify.send(
+                f"⚠️ Guardian: call connected but Mom didn't press 1 to confirm (attempt {attempt_number}). "
                 f"Retrying {when}.")
         else:
             telegram_notify.send(

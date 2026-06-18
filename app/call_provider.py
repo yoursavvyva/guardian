@@ -39,12 +39,15 @@ def set_mock_result(result):
 class MockProvider(CallProvider):
     name = "mock"
 
-    def place_call(self, target_type, target_value) -> CallResult:
+    def place_call(self, target_type, target_value, message=None) -> CallResult:
+        valid = ("confirmed_ok", "answered_unconfirmed", "missed", "failed")
         result = _mock_override["result"] or settings.mock_result
+        if result == "answered":          # legacy alias → a confirmed wellness pass
+            result = "confirmed_ok"
         if result == "random":
-            result = random.choice(["answered", "answered", "missed", "failed"])
-        if result not in ("answered", "missed", "failed"):
-            result = "answered"
+            result = random.choice(["confirmed_ok", "confirmed_ok", "answered_unconfirmed", "missed", "failed"])
+        if result not in valid:
+            result = "confirmed_ok"
         return CallResult(result, provider="mock")
 
 
@@ -82,6 +85,8 @@ class ThreeCXProvider(CallProvider):
             "mode": "announce",
             "device": settings.angel_device,
             "timeoutSeconds": settings.ring_timeout,
+            "confirm": settings.confirm_enabled,        # Phase 2.5: require a key press
+            "confirmDigit": settings.confirm_digit,
         }
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
@@ -98,6 +103,7 @@ class ThreeCXProvider(CallProvider):
         # poll for outcome
         deadline = _time.time() + settings.ring_timeout + 20
         answered = False
+        confirmed = False
         reason = None
         state = None
         while _time.time() < deadline:
@@ -110,15 +116,21 @@ class ThreeCXProvider(CallProvider):
                 continue
             if st.get("answeredAt"):
                 answered = True
+            if st.get("confirmed"):
+                confirmed = True
             if st.get("failureReason"):
                 reason = st.get("failureReason")
             state = (st.get("state") or "").lower()
             if state in ("completed", "failed", "ended"):
                 break
 
+        # Phase 2.5 outcome model — a connected call is NOT "Mom is okay".
         if answered:
-            return CallResult("answered", provider="3cx")
-        # Distinguish a genuine no-answer (Mom didn't pick up) from a TECHNICAL failure.
+            # confirmed only when she actively pressed the key (or confirm disabled).
+            if confirmed or not settings.confirm_enabled:
+                return CallResult("confirmed_ok", provider="3cx")
+            return CallResult("answered_unconfirmed", provider="3cx")
+        # Not answered: genuine no-answer vs TECHNICAL failure.
         no_answer = {"no_answer", "no-answer", "busy", "timeout", "local_hangup", "remote_hangup"}
         r = (reason or "").lower()
         if r and r not in no_answer:

@@ -156,9 +156,17 @@ class Settings:
 
     @property
     def call_message(self):
+        # Phase 2.5: the message MUST ask for an active confirmation (press 1).
         return env("GUARDIAN_CALL_MESSAGE",
-                   "Hi Mom, it's Angel just checking in to make sure you're doing okay. "
-                   "If you can hear this, you're all set. Love you.")
+                   "Hi Mom, it's Angel just checking in. If you are okay, please press one.")
+
+    @property
+    def confirm_enabled(self):
+        return env("GUARDIAN_CONFIRM", "true").lower() != "false"
+
+    @property
+    def confirm_digit(self):
+        return env("GUARDIAN_CONFIRM_DIGIT", "1")
 
     @property
     def ring_timeout(self):

@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             telegram_notify.send(f"🧪 Angel: placing a TEST call to {mask_phone(to)}…")
             res = ThreeCXProvider().place_call("test", to, message=body.get("message"))
             telegram_notify.send(f"🧪 Angel test call → {res.status}{(' (' + res.error + ')') if res.error else ''}.")
-            return self._send(200, {"ok": res.status == "answered", "status": res.status, "error": res.error})
+            return self._send(200, {"ok": res.status == "confirmed_ok", "status": res.status, "error": res.error})
         return self._send(404, {"error": "not found"})
 
 
