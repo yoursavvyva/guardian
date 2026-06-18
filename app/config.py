@@ -39,8 +39,14 @@ class Settings:
 
     @property
     def schedule(self):
-        # "11:00,16:00,20:30" -> ["11:00","16:00","20:30"]
-        raw = env("GUARDIAN_SCHEDULE", "11:00,16:00,20:30")
+        # "11:00,16:00,20:30" -> ["11:00","16:00","20:30"].
+        # An explicitly-empty GUARDIAN_SCHEDULE means DISABLED (no scheduled checks) —
+        # do NOT fall back to the default in that case (that's the scheduler kill-switch).
+        raw = os.environ.get("GUARDIAN_SCHEDULE")
+        if raw is None:
+            raw = _load_env().get("GUARDIAN_SCHEDULE")
+        if raw is None:
+            raw = "11:00,16:00,20:30"
         return [s.strip() for s in raw.split(",") if s.strip()]
 
     @property
