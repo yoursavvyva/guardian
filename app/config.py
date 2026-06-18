@@ -109,9 +109,34 @@ class Settings:
         return env("TELNYX_FROM_NUMBER", "")
 
     # ---- 3cx ----
+    # Guardian calls FROM Angel's own extension (SIP creds below). Mom's ext is
+    # only a dial destination (MOM_3CX_EXTENSION) — her SIP creds are never needed.
     @property
     def threecx_base_url(self):
         return env("THREECX_BASE_URL", "")
+
+    @property
+    def threecx_extension(self):
+        return env("THREECX_EXTENSION", "")
+
+    @property
+    def threecx_auth_id(self):
+        return env("THREECX_AUTH_ID", "")
+
+    @property
+    def threecx_password(self):
+        return env("THREECX_PASSWORD", "")
+
+    @property
+    def threecx_sip_domain(self):
+        return env("THREECX_SIP_DOMAIN", "")
+
+    @property
+    def threecx_sip_port(self):
+        try:
+            return int(env("THREECX_SIP_PORT", "5060"))
+        except ValueError:
+            return 5060
 
     @property
     def db_path(self):

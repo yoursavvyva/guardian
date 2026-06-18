@@ -106,7 +106,7 @@ def config_overview():
         "mom_cell": mask_phone(settings.mom_cell) or "(not set)",
         "telegram_configured": telegram_notify.configured(),
         "telnyx_configured": bool(settings.telnyx_api_key),
-        "threecx_configured": bool(settings.threecx_base_url),
+        "threecx_configured": bool(settings.threecx_extension and settings.threecx_auth_id),
     }
 
 

@@ -67,7 +67,7 @@ class ThreeCXProvider(CallProvider):
     name = "3cx"
 
     def place_call(self, target_type, target_value) -> CallResult:
-        if not settings.threecx_base_url:
+        if not (settings.threecx_extension and settings.threecx_auth_id and settings.threecx_password):
             return CallResult("failed", error="3cx_not_configured", provider="3cx")
         return CallResult("failed", error="3cx_not_implemented_phase1", provider="3cx")
 
