@@ -40,12 +40,13 @@ class MockProvider(CallProvider):
     name = "mock"
 
     def place_call(self, target_type, target_value, message=None) -> CallResult:
-        valid = ("confirmed_ok", "answered_unconfirmed", "missed", "failed")
+        valid = ("confirmed_ok", "needs_darcee", "answered_unconfirmed", "missed", "failed")
         result = _mock_override["result"] or settings.mock_result
         if result == "answered":          # legacy alias → a confirmed wellness pass
             result = "confirmed_ok"
         if result == "random":
-            result = random.choice(["confirmed_ok", "confirmed_ok", "answered_unconfirmed", "missed", "failed"])
+            result = random.choice(["confirmed_ok", "confirmed_ok", "needs_darcee",
+                                    "answered_unconfirmed", "missed", "failed"])
         if result not in valid:
             result = "confirmed_ok"
         return CallResult(result, provider="mock")
@@ -82,11 +83,15 @@ class ThreeCXProvider(CallProvider):
         payload = {
             "to": str(target_value),
             "message": message or settings.call_message,
-            "mode": "announce",
+            "reprompt": settings.call_reprompt,         # spoken if no digit in the first window
+            "mode": "menu",                             # ANGEL-05: two-choice DTMF menu
             "device": settings.angel_device,
             "timeoutSeconds": settings.ring_timeout,
-            "confirm": settings.confirm_enabled,        # Phase 2.5: require a key press
-            "confirmDigit": settings.confirm_digit,
+            # digit -> meaning. Voice-app reports the pressed digit back on /api/call/:id.
+            "menu": {settings.okay_digit: "okay", settings.needs_call_digit: "needs_call"},
+            # backward-compat for older voice-app builds that only know confirm/confirmDigit:
+            "confirm": settings.confirm_enabled,
+            "confirmDigit": settings.okay_digit,
         }
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
@@ -104,6 +109,7 @@ class ThreeCXProvider(CallProvider):
         deadline = _time.time() + settings.ring_timeout + 20
         answered = False
         confirmed = False
+        digit = ""              # ANGEL-05: which menu digit Mom pressed
         reason = None
         state = None
         while _time.time() < deadline:
@@ -118,16 +124,20 @@ class ThreeCXProvider(CallProvider):
                 answered = True
             if st.get("confirmed"):
                 confirmed = True
+            if st.get("digit") not in (None, ""):
+                digit = str(st.get("digit"))
             if st.get("failureReason"):
                 reason = st.get("failureReason")
             state = (st.get("state") or "").lower()
             if state in ("completed", "failed", "ended"):
                 break
 
-        # Phase 2.5 outcome model — a connected call is NOT "Mom is okay".
+        # ANGEL-05 outcome model — a connected call is NOT "Mom is okay".
+        # She must press a menu key: 1 = okay, 2 = have Darcee call. No input = unconfirmed.
         if answered:
-            # confirmed only when she actively pressed the key (or confirm disabled).
-            if confirmed or not settings.confirm_enabled:
+            if digit == settings.needs_call_digit:
+                return CallResult("needs_darcee", provider="3cx")
+            if digit == settings.okay_digit or confirmed:
                 return CallResult("confirmed_ok", provider="3cx")
             return CallResult("answered_unconfirmed", provider="3cx")
         # Not answered: genuine no-answer vs TECHNICAL failure.

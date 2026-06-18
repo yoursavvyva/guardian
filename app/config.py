@@ -162,9 +162,17 @@ class Settings:
 
     @property
     def call_message(self):
-        # Phase 2.5: the message MUST ask for an active confirmation (press 1).
+        # ANGEL-05: two-choice wellness menu (DTMF only — no STT, no open-ended Q&A).
         return env("GUARDIAN_CALL_MESSAGE",
-                   "Hello Mom, this is Angel checking in. If you are okay, please press one now.")
+                   "Hi Mom, this is Angel checking in. Are you okay today? "
+                   "Press 1 for yes. Press 2 if you need Darcee to call you.")
+
+    @property
+    def call_reprompt(self):
+        # Re-prompt spoken when no digit is received in the first window.
+        return env("GUARDIAN_CALL_REPROMPT",
+                   "I didn't receive your answer. Press 1 if you are okay. "
+                   "Press 2 if you need Darcee to call you.")
 
     @property
     def confirm_enabled(self):
@@ -172,7 +180,18 @@ class Settings:
 
     @property
     def confirm_digit(self):
+        # Legacy alias; the menu now uses okay_digit/needs_call_digit.
         return env("GUARDIAN_CONFIRM_DIGIT", "1")
+
+    @property
+    def okay_digit(self):
+        # Press this = "I'm okay" -> confirmed_ok. Defaults to the legacy confirm digit.
+        return env("GUARDIAN_OKAY_DIGIT", self.confirm_digit)
+
+    @property
+    def needs_call_digit(self):
+        # Press this = "have Darcee call me" -> needs_darcee.
+        return env("GUARDIAN_NEEDS_CALL_DIGIT", "2")
 
     @property
     def ring_timeout(self):

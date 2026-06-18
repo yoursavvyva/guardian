@@ -28,6 +28,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scheduled_time TEXT NOT NULL,
                 final_status TEXT NOT NULL DEFAULT 'pending',
+                wellness_result TEXT,
                 answered_attempt_number INTEGER,
                 escalation_sent INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at TEXT,
@@ -52,6 +53,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS ix_attempts_checkin ON guardian_call_attempts(scheduled_check_id);
             """
         )
+        # ANGEL-05 migration: add wellness_result to pre-existing databases.
+        cols = [r[1] for r in c.execute("PRAGMA table_info(guardian_checkins)").fetchall()]
+        if "wellness_result" not in cols:
+            c.execute("ALTER TABLE guardian_checkins ADD COLUMN wellness_result TEXT")
 
 
 def _now():

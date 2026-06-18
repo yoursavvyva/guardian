@@ -91,11 +91,25 @@ def _run_attempt(checkin):
     storage.update_checkin(checkin["id"], attempt_count=attempt_number)
 
     label = _label(checkin["scheduled_time"])
-    # Phase 2.5: ONLY an active confirmation (she pressed 1) is a wellness pass.
+    # ANGEL-05: pressing 1 (okay) is the only wellness pass.
     if res.status == "confirmed_ok":
         storage.update_checkin(checkin["id"], final_status=CheckinStatus.ANSWERED,
+                               wellness_result="okay",
                                answered_attempt_number=attempt_number, next_attempt_at=None)
         telegram_notify.send(f"💚 Guardian: Mom confirmed she's okay (pressed 1) on the {label} check. All good.")
+        return
+
+    # ANGEL-05: pressing 2 means "have Darcee call me" — a COMPLETED check (not a failure).
+    # Terminal, no retry/escalation; ping Darcee right away.
+    if res.status == "needs_darcee":
+        storage.update_checkin(checkin["id"], final_status=CheckinStatus.NEEDS_DARCEE,
+                               wellness_result="needs_call",
+                               answered_attempt_number=attempt_number, next_attempt_at=None)
+        telegram_notify.send(
+            "🟡 Angel Check-In\n\n"
+            "Mom requested a call from Darcee.\n\n"
+            f"Time: {label}\n\n"
+            "This is not an emergency, but she would like you to call her.")
         return
 
     # Everything else advances the ladder. Distinguish the cause for clear wording:

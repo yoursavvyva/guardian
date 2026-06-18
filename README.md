@@ -9,10 +9,22 @@ API — PMC never reads Guardian's database directly.
 
 ## Phase 1 scope
 - Configurable schedule — pilot = **two daily checks: 11:00 AM + 6:00 PM** America/New_York.
+- **Two-choice wellness menu (ANGEL-05, DTMF only — no speech recognition):**
+  Angel asks *"Hi Mom, this is Angel checking in. Are you okay today? Press 1 for yes.
+  Press 2 if you need Darcee to call you."* (re-prompts once if no input).
 - Retry ladder: extension → wait 20m → extension → wait 20m → **cell** → escalate.
-- Telegram notifications (started / calling / answered / missed+retry / escalation).
+- Telegram notifications (started / calling / answered / **needs-Darcee** / missed+retry / escalation).
 - **Mock call provider by default — no real calls are placed.** Telnyx & 3CX are
   scaffolded behind a provider interface but disabled until configured in Phase 2.
+
+### Outcome model (ANGEL-05)
+| Mom does | status | wellness_result | What happens |
+|---|---|---|---|
+| Presses **1** | `confirmed_ok` | `okay` | ✅ pass, no escalation |
+| Presses **2** | `needs_darcee` | `needs_call` | 🟡 terminal (NOT a failure) — pings Darcee to call her |
+| No input | `answered_unconfirmed` | — | retry / escalate |
+| No answer | `missed` | — | retry / escalate |
+| Technical error | `failed` | — | retry / escalate (never "Mom missed") |
 - SQLite storage (`data/guardian.db`): `guardian_checkins`, `guardian_call_attempts`.
 - Internal HTTP API for PMC (health/status/checkins/attempts/test), token-protected,
   phone numbers masked everywhere.

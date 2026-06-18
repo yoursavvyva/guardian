@@ -54,11 +54,14 @@ def status():
     last = storage.last_checkin()
     answered = storage.last_answered()
     missed_today = sum(1 for c in today if c["final_status"] in (CheckinStatus.MISSED, CheckinStatus.ESCALATED))
+    needs_darcee_today = sum(1 for c in today if c["final_status"] == CheckinStatus.NEEDS_DARCEE)
     escalation_active = any(c["final_status"] == CheckinStatus.ESCALATED for c in today)
-    # overall today rollup for the dashboard dot
+    # overall today rollup for the dashboard dot. needs_darcee = attention (yellow), NOT red.
     if escalation_active:
         today_status = "red"
     elif any(c["final_status"] == CheckinStatus.PENDING for c in today):
+        today_status = "yellow"
+    elif needs_darcee_today:
         today_status = "yellow"
     elif today and all(c["final_status"] == CheckinStatus.ANSWERED for c in today):
         today_status = "green"
@@ -71,6 +74,7 @@ def status():
         "last_check_status": last["final_status"] if last else None,
         "last_answered_at": answered["scheduled_time"] if answered else None,
         "missed_checks_today": missed_today,
+        "needs_darcee_today": needs_darcee_today,
         "escalation_active": escalation_active,
         "next_check_at": scheduler.next_scheduled_check(),
     }
@@ -82,11 +86,13 @@ def checkins_today():
     sched = scheduler._scheduled_today(now)
     completed = [c for c in today if c["final_status"] == CheckinStatus.ANSWERED]
     missed = [c for c in today if c["final_status"] in (CheckinStatus.MISSED, CheckinStatus.ESCALATED)]
+    needs_darcee = [c for c in today if c["final_status"] == CheckinStatus.NEEDS_DARCEE]
     pending = [c for c in today if c["final_status"] == CheckinStatus.PENDING]
     return {
         "scheduled": [d.strftime("%-I:%M %p") for d in sched],
         "completed": len(completed),
         "missed": len(missed),
+        "needs_darcee": len(needs_darcee),
         "pending": len(pending),
         "escalation": any(c["final_status"] == CheckinStatus.ESCALATED for c in today),
         "checkins": today,

@@ -3,7 +3,8 @@
 
 class CheckinStatus:
     PENDING = "pending"        # scheduled, attempts in progress
-    ANSWERED = "answered"      # Mom picked up
+    ANSWERED = "answered"      # Mom picked up and confirmed she's okay (pressed 1)
+    NEEDS_DARCEE = "needs_darcee"  # Mom pressed 2 — wants Darcee to call her (terminal, NOT a failure)
     MISSED = "missed"          # all attempts failed, escalation handled
     ESCALATED = "escalated"    # urgent alert sent after max attempts
 
@@ -16,9 +17,15 @@ class AttemptStatus:
 
 
 class Outcome:
-    """Phase 2.5 wellness-check outcomes. Only CONFIRMED_OK is a real pass."""
-    CONFIRMED_OK = "confirmed_ok"            # she actively pressed the confirm digit
-    ANSWERED_UNCONFIRMED = "answered_unconfirmed"  # connected, no confirmation (treat as a miss)
+    """Wellness-check outcomes (ANGEL-05 two-choice menu).
+
+    Press 1 = okay → CONFIRMED_OK (the only wellness pass).
+    Press 2 = needs Darcee → NEEDS_DARCEE (terminal, NOT a failure; pings Darcee).
+    Everything else is a miss/technical state and advances the retry ladder.
+    """
+    CONFIRMED_OK = "confirmed_ok"            # pressed 1 — she's okay
+    NEEDS_DARCEE = "needs_darcee"            # pressed 2 — she wants Darcee to call her
+    ANSWERED_UNCONFIRMED = "answered_unconfirmed"  # connected, no input (treat as a miss)
     MISSED = "missed"                        # no answer / busy
     FAILED = "failed"                        # technical/system error (NOT "Mom missed")
 

@@ -47,13 +47,16 @@ def _mock_voiceapp(status_data):
 
 # ---- 1. provider classification (voice-app status -> outcome) ----
 def test_provider_classification():
+    # ANGEL-05 two-choice menu: digit 1 = okay, digit 2 = needs Darcee, no digit = unconfirmed.
     cases = {
-        "confirmed":   ({"state": "completed", "answeredAt": "x", "confirmed": True}, "confirmed_ok"),
-        "no_press":    ({"state": "completed", "answeredAt": "x", "confirmed": False}, "answered_unconfirmed"),
-        "no_answer":   ({"state": "failed", "answeredAt": None, "failureReason": "no_answer"}, "missed"),
-        "busy":        ({"state": "failed", "answeredAt": None, "failureReason": "busy"}, "missed"),
-        "tech_503":    ({"state": "failed", "answeredAt": None, "failureReason": "service_unavailable"}, "failed"),
-        "tech_404":    ({"state": "failed", "answeredAt": None, "failureReason": "not_found"}, "failed"),
+        "press_1_okay":   ({"state": "completed", "answeredAt": "x", "digit": "1"}, "confirmed_ok"),
+        "press_2_darcee": ({"state": "completed", "answeredAt": "x", "digit": "2"}, "needs_darcee"),
+        "legacy_confirm": ({"state": "completed", "answeredAt": "x", "confirmed": True}, "confirmed_ok"),
+        "no_press":       ({"state": "completed", "answeredAt": "x"}, "answered_unconfirmed"),
+        "no_answer":      ({"state": "failed", "answeredAt": None, "failureReason": "no_answer"}, "missed"),
+        "busy":           ({"state": "failed", "answeredAt": None, "failureReason": "busy"}, "missed"),
+        "tech_503":       ({"state": "failed", "answeredAt": None, "failureReason": "service_unavailable"}, "failed"),
+        "tech_404":       ({"state": "failed", "answeredAt": None, "failureReason": "not_found"}, "failed"),
     }
     for name, (data, expected) in cases.items():
         _mock_voiceapp(data)
@@ -61,9 +64,10 @@ def test_provider_classification():
         assert res.status == expected, f"{name}: got {res.status}, expected {expected}"
 
 
-# ---- 2. mock provider returns all four states ----
+# ---- 2. mock provider returns all five states ----
 def test_mock_provider_states():
     for want, expected in [("confirmed_ok", "confirmed_ok"),
+                           ("needs_darcee", "needs_darcee"),
                            ("answered_unconfirmed", "answered_unconfirmed"),
                            ("missed", "missed"),
                            ("failed", "failed"),
@@ -79,6 +83,18 @@ def test_scheduler_confirmed_ok_passes():
     storage.init_db()
     ci = scheduler.trigger_mock_check(result="confirmed_ok")
     assert ci["final_status"] == CheckinStatus.ANSWERED, ci["final_status"]
+    assert ci["answered_attempt_number"] == 1
+    assert ci["wellness_result"] == "okay", ci["wellness_result"]
+
+
+def test_scheduler_needs_darcee_is_terminal_not_failure():
+    """Pressing 2 = a COMPLETED check that pings Darcee — no retry, no escalation."""
+    storage.init_db()
+    ci = scheduler.trigger_mock_check(result="needs_darcee")
+    assert ci["final_status"] == CheckinStatus.NEEDS_DARCEE, ci["final_status"]
+    assert ci["wellness_result"] == "needs_call", ci["wellness_result"]
+    assert not ci["next_attempt_at"], "needs_darcee must NOT schedule a retry"
+    assert ci["escalation_sent"] == 0, "needs_darcee is not an escalation"
     assert ci["answered_attempt_number"] == 1
 
 
