@@ -145,6 +145,69 @@ def test_scheduler_escalates_unconfirmed_on_last_attempt():
     assert ci["escalation_sent"] == 1
 
 
+# ---- ANGEL-06: call-back acknowledgment + reminders ----
+def test_needs_darcee_is_unacked_then_acknowledged():
+    storage.init_db()
+    ci = scheduler.trigger_mock_check(result="needs_darcee")
+    pending = storage.unacked_needs_darcee()
+    assert any(p["id"] == ci["id"] for p in pending), "needs_darcee should start un-acknowledged"
+    upd = storage.acknowledge_checkin(ci["id"])
+    assert upd["acknowledged"] == 1 and upd["acknowledged_at"], upd
+    assert not any(p["id"] == ci["id"] for p in storage.unacked_needs_darcee()), "ack must remove it from pending"
+
+
+def test_quiet_hours_window():
+    from datetime import datetime
+    tz = scheduler._tz()
+    # default quiet 21:00–08:00
+    assert scheduler._in_quiet_hours(datetime(2026, 6, 18, 23, 0, tzinfo=tz)) is True
+    assert scheduler._in_quiet_hours(datetime(2026, 6, 18, 3, 0, tzinfo=tz)) is True
+    assert scheduler._in_quiet_hours(datetime(2026, 6, 18, 12, 0, tzinfo=tz)) is False
+
+
+def test_ack_reminder_fires_when_due_and_stops_after_ack(monkeypatchless=True):
+    storage.init_db()
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a), (True, "sent"))[1]
+    try:
+        ci = scheduler.trigger_mock_check(result="needs_darcee")
+        sent.clear()
+        # backdate created + last_reminder so a reminder is due, and force daytime
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        storage.update_checkin(ci["id"], created_at=old, last_reminder_at=old)
+        noon = scheduler._now().replace(hour=12, minute=0)
+        scheduler._process_ack_reminders(noon)
+        assert len(sent) == 1, f"expected one reminder, got {len(sent)}"
+        assert (storage.get_checkin(ci["id"]).get("reminder_count") or 0) >= 1
+        # acknowledge -> no further reminders even when due
+        storage.acknowledge_checkin(ci["id"])
+        sent.clear()
+        scheduler._process_ack_reminders(noon)
+        assert len(sent) == 0, "no reminders after acknowledgment"
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_ack_reminder_silent_in_quiet_hours():
+    storage.init_db()
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a), (True, "sent"))[1]
+    try:
+        ci = scheduler.trigger_mock_check(result="needs_darcee")
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        storage.update_checkin(ci["id"], created_at=old, last_reminder_at=old)
+        sent.clear()
+        midnight = scheduler._now().replace(hour=23, minute=30)
+        scheduler._process_ack_reminders(midnight)
+        assert len(sent) == 0, "reminders must be silent during quiet hours"
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

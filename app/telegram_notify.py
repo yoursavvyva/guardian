@@ -23,19 +23,23 @@ def status():
     }
 
 
-def send(text):
-    """Send a Telegram message. Returns (ok, detail). No-ops cleanly if unconfigured."""
+def send(text, reply_markup=None):
+    """Send a Telegram message. Returns (ok, detail). No-ops cleanly if unconfigured.
+    reply_markup (optional): a Telegram inline-keyboard dict (e.g. an 'I called her' button)."""
     from datetime import datetime, timezone
     _status["configured"] = configured()
     if not configured():
         _status["last_error"] = "not_configured"
         return False, "telegram_not_configured"
     try:
-        body = json.dumps({
+        payload = {
             "chat_id": settings.telegram_chat_id,
             "text": text,
             "disable_web_page_preview": True,
-        }).encode()
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{settings.telegram_token}/sendMessage",
             data=body, headers={"Content-Type": "application/json"})

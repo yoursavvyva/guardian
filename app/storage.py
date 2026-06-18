@@ -33,6 +33,11 @@ def init_db():
                 escalation_sent INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at TEXT,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
+                acknowledged INTEGER NOT NULL DEFAULT 0,
+                acknowledged_at TEXT,
+                acknowledged_by TEXT,
+                reminder_count INTEGER NOT NULL DEFAULT 0,
+                last_reminder_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -53,10 +58,19 @@ def init_db():
             CREATE INDEX IF NOT EXISTS ix_attempts_checkin ON guardian_call_attempts(scheduled_check_id);
             """
         )
-        # ANGEL-05 migration: add wellness_result to pre-existing databases.
+        # Additive migrations for pre-existing databases.
         cols = [r[1] for r in c.execute("PRAGMA table_info(guardian_checkins)").fetchall()]
-        if "wellness_result" not in cols:
+        if "wellness_result" not in cols:                                  # ANGEL-05
             c.execute("ALTER TABLE guardian_checkins ADD COLUMN wellness_result TEXT")
+        for col, ddl in [                                                  # ANGEL-06 (call-back ack)
+            ("acknowledged", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0"),
+            ("acknowledged_at", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged_at TEXT"),
+            ("acknowledged_by", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged_by TEXT"),
+            ("reminder_count", "ALTER TABLE guardian_checkins ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0"),
+            ("last_reminder_at", "ALTER TABLE guardian_checkins ADD COLUMN last_reminder_at TEXT"),
+        ]:
+            if col not in cols:
+                c.execute(ddl)
 
 
 def _now():
@@ -129,6 +143,43 @@ def last_answered():
             "SELECT * FROM guardian_checkins WHERE final_status='answered' ORDER BY scheduled_time DESC LIMIT 1"
         ).fetchone()
         return dict(r) if r else None
+
+
+# ---- ANGEL-06: call-back acknowledgments ----
+def unacked_needs_darcee():
+    """needs_darcee check-ins Darcee hasn't acknowledged calling back yet (oldest first)."""
+    with _LOCK, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM guardian_checkins "
+            "WHERE final_status='needs_darcee' AND COALESCE(acknowledged,0)=0 "
+            "ORDER BY scheduled_time ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def acknowledge_checkin(checkin_id, by="darcee"):
+    """Mark a needs_darcee check-in as called-back. Returns the updated row (or None)."""
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            "UPDATE guardian_checkins SET acknowledged=1, acknowledged_at=?, acknowledged_by=?, "
+            "next_attempt_at=NULL, updated_at=? "
+            "WHERE id=? AND final_status='needs_darcee'",
+            (_now(), by, _now(), checkin_id),
+        )
+        if cur.rowcount == 0:
+            r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
+            return dict(r) if r else None
+        r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def mark_reminded(checkin_id):
+    with _LOCK, _conn() as c:
+        c.execute(
+            "UPDATE guardian_checkins SET reminder_count=COALESCE(reminder_count,0)+1, "
+            "last_reminder_at=?, updated_at=? WHERE id=?",
+            (_now(), _now(), checkin_id),
+        )
 
 
 # ---- attempts ----

@@ -212,6 +212,31 @@ class Settings:
         except ValueError:
             return 30
 
+    # ---- ANGEL-06: call-back reminders (when Mom presses 2 / needs_darcee) ----
+    @property
+    def ack_reminder_minutes(self):
+        # How often to re-nudge Darcee until she acknowledges calling Mom back.
+        try:
+            return int(env("GUARDIAN_ACK_REMINDER_MINUTES", "30"))
+        except ValueError:
+            return 30
+
+    @property
+    def quiet_start_hour(self):
+        # No reminders at/after this local hour (24h). 21 = 9pm.
+        try:
+            return int(env("GUARDIAN_QUIET_START", "21"))
+        except ValueError:
+            return 21
+
+    @property
+    def quiet_end_hour(self):
+        # Reminders resume at/after this local hour. 8 = 8am.
+        try:
+            return int(env("GUARDIAN_QUIET_END", "8"))
+        except ValueError:
+            return 8
+
     @property
     def db_path(self):
         return env("GUARDIAN_DB", os.path.join(HERE, "data", "guardian.db"))

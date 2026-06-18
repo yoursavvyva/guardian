@@ -109,7 +109,9 @@ def _run_attempt(checkin):
             "🟡 Angel Check-In\n\n"
             "Mom requested a call from Darcee.\n\n"
             f"Time: {label}\n\n"
-            "This is not an emergency, but she would like you to call her.")
+            "This is not an emergency, but she would like you to call her.\n"
+            "Tap below once you've called her.",
+            reply_markup=_ack_button(checkin["id"]))
         return
 
     # Everything else advances the ladder. Distinguish the cause for clear wording:
@@ -158,6 +160,47 @@ def _label(scheduled_iso):
         return scheduled_iso
 
 
+# ---- ANGEL-06: call-back acknowledgment reminders ----
+def _ack_button(checkin_id):
+    """Inline 'I called her' button; tapping it sends callback_data Guardian's bot poller acts on."""
+    return {"inline_keyboard": [[{"text": "✅ I called her", "callback_data": f"guardian_ack:{checkin_id}"}]]}
+
+
+def _in_quiet_hours(now=None):
+    """True if local time is within the no-reminder window (quiet_start..quiet_end, wrapping midnight)."""
+    h = (now or _now()).hour
+    s, e = settings.quiet_start_hour, settings.quiet_end_hour
+    if s == e:
+        return False
+    return (h >= s or h < e) if s > e else (s <= h < e)
+
+
+def _process_ack_reminders(now=None):
+    """Re-nudge Darcee every ack_reminder_minutes for any un-acknowledged needs_darcee
+    check-in, until she taps acknowledge. Quiet overnight; resumes in the morning."""
+    now = now or _now()
+    if _in_quiet_hours(now):
+        return
+    from datetime import timezone
+    interval = timedelta(minutes=settings.ack_reminder_minutes)
+    now_utc = datetime.now(timezone.utc)
+    for ci in storage.unacked_needs_darcee():
+        base = ci.get("last_reminder_at") or ci.get("created_at")
+        try:
+            since = now_utc - datetime.fromisoformat(base)
+        except (ValueError, TypeError):
+            since = interval  # malformed timestamp → treat as due
+        if since < interval:
+            continue
+        label = _label(ci["scheduled_time"])
+        telegram_notify.send(
+            "🔔 Reminder — Mom still waiting for a call\n\n"
+            f"She asked Angel for a call from you at {label} and it isn't marked done yet.\n"
+            "Tap below once you've called her (or clear it on the Guardian page).",
+            reply_markup=_ack_button(ci["id"]))
+        storage.mark_reminded(ci["id"])
+
+
 # ---- tick ----
 def _tick():
     now = _now()
@@ -178,6 +221,8 @@ def _tick():
                 due = False
             if due:
                 _run_attempt(ci)
+    # 3) re-nudge un-acknowledged call-back requests (ANGEL-06)
+    _process_ack_reminders(now)
 
 
 def trigger_mock_check(result=None):

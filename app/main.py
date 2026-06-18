@@ -69,12 +69,18 @@ def status():
         today_status = "yellow"
     else:
         today_status = "idle"
+    # Outstanding call-back requests (any day) Darcee hasn't acknowledged yet.
+    pending = storage.unacked_needs_darcee()
     return {
         "today_status": today_status,
         "last_check_status": last["final_status"] if last else None,
         "last_answered_at": answered["scheduled_time"] if answered else None,
         "missed_checks_today": missed_today,
         "needs_darcee_today": needs_darcee_today,
+        "pending_callbacks": [
+            {"id": c["id"], "scheduled_time": c["scheduled_time"], "reminder_count": c.get("reminder_count") or 0}
+            for c in pending
+        ],
         "escalation_active": escalation_active,
         "next_check_at": scheduler.next_scheduled_check(),
     }
@@ -170,6 +176,20 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(n).decode() or "{}")
         except Exception:
             body = {}
+        if path == "/guardian/acknowledge":
+            # Mark a needs_darcee call-back as done (Darcee called Mom). Stops reminders.
+            # Body: {"checkin_id": N}; if omitted, acknowledges the oldest un-acked one.
+            cid = body.get("checkin_id")
+            if cid is None:
+                pending = storage.unacked_needs_darcee()
+                if not pending:
+                    return self._send(200, {"ok": True, "nothing_pending": True})
+                cid = pending[0]["id"]
+            ci = storage.acknowledge_checkin(cid, by=str(body.get("by") or "darcee"))
+            if not ci:
+                return self._send(404, {"ok": False, "error": "checkin not found"})
+            acked = bool(ci.get("acknowledged"))
+            return self._send(200, {"ok": acked, "acknowledged": acked, "checkin": ci})
         if path == "/guardian/test/mock-check":
             ci = scheduler.trigger_mock_check(result=body.get("result"))
             return self._send(200, {"ok": True, "checkin": ci})
