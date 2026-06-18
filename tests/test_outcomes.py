@@ -156,6 +156,25 @@ def test_needs_darcee_is_unacked_then_acknowledged():
     assert not any(p["id"] == ci["id"] for p in storage.unacked_needs_darcee()), "ack must remove it from pending"
 
 
+def test_acknowledge_and_confirm_sends_once():
+    storage.init_db()
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a[0] if a else ""), (True, "sent"))[1]
+    try:
+        ci = scheduler.trigger_mock_check(result="needs_darcee")
+        sent.clear()
+        out, changed = scheduler.acknowledge_and_confirm(ci["id"], by="test")
+        assert changed and out["acknowledged"] == 1, out
+        assert any("called Mom back" in str(m) for m in sent), "Angel should confirm the acknowledgment"
+        # second call must NOT re-confirm
+        sent.clear()
+        out2, changed2 = scheduler.acknowledge_and_confirm(ci["id"], by="test")
+        assert changed2 is False and len(sent) == 0, "no duplicate confirmation on re-ack"
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
 def test_quiet_hours_window():
     from datetime import datetime
     tz = scheduler._tz()

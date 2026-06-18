@@ -185,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not pending:
                     return self._send(200, {"ok": True, "nothing_pending": True})
                 cid = pending[0]["id"]
-            ci = storage.acknowledge_checkin(cid, by=str(body.get("by") or "darcee"))
+            ci, _changed = scheduler.acknowledge_and_confirm(cid, by=str(body.get("by") or "darcee"))
             if not ci:
                 return self._send(404, {"ok": False, "error": "checkin not found"})
             acked = bool(ci.get("acknowledged"))
@@ -215,6 +215,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     storage.init_db()
     scheduler.start()
+    from app import telegram_listener  # Angel-bot callback listener (ack taps); separate from Max
+    telegram_listener.start()
     telegram_notify.send("🛡️ Guardian service started — wellness checks are scheduled.")
     server = ThreadingHTTPServer(("127.0.0.1", settings.port), Handler)
     print(f"[guardian] listening on 127.0.0.1:{settings.port} · provider={settings.call_provider} "

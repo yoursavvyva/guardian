@@ -166,6 +166,24 @@ def _ack_button(checkin_id):
     return {"inline_keyboard": [[{"text": "✅ I called her", "callback_data": f"guardian_ack:{checkin_id}"}]]}
 
 
+def acknowledge_and_confirm(checkin_id, by="darcee"):
+    """Mark a needs_darcee call-back acknowledged and send Angel's confirmation back.
+    Used by BOTH the API (dashboard button) and the Angel-bot listener (Telegram tap),
+    so there is exactly one place that acks + confirms. Returns (checkin, changed)."""
+    ci = storage.get_checkin(checkin_id)
+    if not ci or ci.get("final_status") != CheckinStatus.NEEDS_DARCEE:
+        return ci, False
+    if ci.get("acknowledged"):
+        return ci, False  # already acknowledged — don't send a duplicate confirmation
+    ci = storage.acknowledge_checkin(checkin_id, by=by)
+    label = _label(ci["scheduled_time"]) if ci else ""
+    telegram_notify.send(
+        "✅ Thank you, Darcee. I've noted that you called Mom back"
+        + (f" about her {label} request" if label else "")
+        + ". I'll stop reminding you now. 💛")
+    return ci, True
+
+
 def _in_quiet_hours(now=None):
     """True if local time is within the no-reminder window (quiet_start..quiet_end, wrapping midnight)."""
     h = (now or _now()).hour
