@@ -80,18 +80,20 @@ class ThreeCXProvider(CallProvider):
         base = settings.voice_app_url.rstrip("/")
         if not base:
             return CallResult("failed", error="voice_app_url_not_set", provider="3cx")
+        # ANGEL-05 two-choice wellness menu over the voice-app's confirm flow:
+        # mode=announce + confirm collects a DTMF press; acceptDigits=[1,2] ends the
+        # wait early on either key. The voice-app reports the pressed key back as
+        # "confirmDigit" on GET /api/call/:id (and "confirmed" if it equals okay_digit).
         payload = {
             "to": str(target_value),
             "message": message or settings.call_message,
-            "reprompt": settings.call_reprompt,         # spoken if no digit in the first window
-            "mode": "menu",                             # ANGEL-05: two-choice DTMF menu
+            "mode": "announce",
             "device": settings.angel_device,
             "timeoutSeconds": settings.ring_timeout,
-            # digit -> meaning. Voice-app reports the pressed digit back on /api/call/:id.
-            "menu": {settings.okay_digit: "okay", settings.needs_call_digit: "needs_call"},
-            # backward-compat for older voice-app builds that only know confirm/confirmDigit:
-            "confirm": settings.confirm_enabled,
-            "confirmDigit": settings.okay_digit,
+            "confirm": settings.confirm_enabled,        # collect a key press
+            "confirmDigit": settings.okay_digit,        # "okay" key -> confirmed=true
+            "acceptDigits": [settings.okay_digit, settings.needs_call_digit],
+            "confirmReprompt": settings.call_reprompt,  # spoken if no key in the first window
         }
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
@@ -124,8 +126,12 @@ class ThreeCXProvider(CallProvider):
                 answered = True
             if st.get("confirmed"):
                 confirmed = True
-            if st.get("digit") not in (None, ""):
-                digit = str(st.get("digit"))
+            # Voice-app reports the pressed key as "confirmDigit"; "digit" kept as a fallback.
+            pressed = st.get("confirmDigit")
+            if pressed in (None, ""):
+                pressed = st.get("digit")
+            if pressed not in (None, ""):
+                digit = str(pressed)
             if st.get("failureReason"):
                 reason = st.get("failureReason")
             state = (st.get("state") or "").lower()

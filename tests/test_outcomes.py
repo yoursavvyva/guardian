@@ -47,12 +47,13 @@ def _mock_voiceapp(status_data):
 
 # ---- 1. provider classification (voice-app status -> outcome) ----
 def test_provider_classification():
-    # ANGEL-05 two-choice menu: digit 1 = okay, digit 2 = needs Darcee, no digit = unconfirmed.
+    # ANGEL-05 two-choice menu. The voice-app reports the pressed key as "confirmDigit"
+    # (and confirmed=true when it equals the okay digit). 1 = okay, 2 = needs Darcee.
     cases = {
-        "press_1_okay":   ({"state": "completed", "answeredAt": "x", "digit": "1"}, "confirmed_ok"),
-        "press_2_darcee": ({"state": "completed", "answeredAt": "x", "digit": "2"}, "needs_darcee"),
+        "press_1_okay":   ({"state": "completed", "answeredAt": "x", "confirmed": True, "confirmDigit": "1"}, "confirmed_ok"),
+        "press_2_darcee": ({"state": "completed", "answeredAt": "x", "confirmed": False, "confirmDigit": "2"}, "needs_darcee"),
         "legacy_confirm": ({"state": "completed", "answeredAt": "x", "confirmed": True}, "confirmed_ok"),
-        "no_press":       ({"state": "completed", "answeredAt": "x"}, "answered_unconfirmed"),
+        "no_press":       ({"state": "completed", "answeredAt": "x", "confirmed": False, "confirmDigit": None}, "answered_unconfirmed"),
         "no_answer":      ({"state": "failed", "answeredAt": None, "failureReason": "no_answer"}, "missed"),
         "busy":           ({"state": "failed", "answeredAt": None, "failureReason": "busy"}, "missed"),
         "tech_503":       ({"state": "failed", "answeredAt": None, "failureReason": "service_unavailable"}, "failed"),
