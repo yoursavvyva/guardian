@@ -158,7 +158,7 @@ class Settings:
     def call_message(self):
         # Phase 2.5: the message MUST ask for an active confirmation (press 1).
         return env("GUARDIAN_CALL_MESSAGE",
-                   "Hi Mom, it's Angel just checking in. If you are okay, please press one.")
+                   "Hello Mom, this is Angel checking in. If you are okay, please press one now.")
 
     @property
     def confirm_enabled(self):
