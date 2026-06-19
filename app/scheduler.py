@@ -82,6 +82,46 @@ def _target_for(attempt_number):
     return TargetType.EXTENSION, "unconfigured"
 
 
+# ---- trash-day rider ----
+def _is_trash_check(checkin):
+    """True if this check-in is the configured day+time that carries the trash question."""
+    if not settings.trash_enabled:
+        return False
+    try:
+        dt = datetime.fromisoformat(checkin["scheduled_time"]).astimezone(_tz())
+    except (ValueError, TypeError):
+        return False
+    return (dt.strftime("%A").lower() == settings.trash_day.strip().lower()
+            and dt.strftime("%H:%M") == settings.trash_time.strip())
+
+
+def _trash_question():
+    return {
+        "message": settings.trash_message,
+        "accept_digits": [settings.trash_yes_digit, settings.trash_no_digit],
+        "yes_digit": settings.trash_yes_digit,
+        "reprompt": settings.trash_reprompt,
+        "ack": {settings.trash_yes_digit: settings.trash_ack_yes,
+                settings.trash_no_digit: settings.trash_ack_no},
+    }
+
+
+def _notify_trash_yes(checkin):
+    """Alert Darcee + any extra family chat IDs (sister) that the trash goes out tomorrow."""
+    label = _label(checkin["scheduled_time"])
+    try:
+        tomorrow = (datetime.fromisoformat(checkin["scheduled_time"]).astimezone(_tz())
+                    + timedelta(days=1)).strftime("%A")
+    except (ValueError, TypeError):
+        tomorrow = "tomorrow"
+    msg = ("🗑️ Trash Day\n\n"
+           f"Mom says the trash NEEDS to go out for {tomorrow}.\n"
+           f"(from the {label} check-in)")
+    telegram_notify.send(msg)
+    for cid in settings.trash_extra_chat_ids:
+        telegram_notify.send(msg, chat_id=cid)
+
+
 # ---- attempt execution ----
 def _run_attempt(checkin):
     attempt_number = (checkin.get("attempt_count") or 0) + 1
@@ -93,9 +133,21 @@ def _run_attempt(checkin):
         checkin["id"], checkin["scheduled_time"], attempt_number, ttype, masked, provider.name)
     telegram_notify.send(f"📞 Guardian: calling Mom — attempt {attempt_number} ({ttype} {masked}).")
 
-    res = provider.place_call(ttype, tval)
+    # Trash-day rider: only ask if it's the configured check AND she hasn't answered it yet.
+    second_q = _trash_question() if (_is_trash_check(checkin) and not checkin.get("trash_result")) else None
+
+    res = provider.place_call(ttype, tval, second_question=second_q)
     storage.finish_attempt(attempt_id, res.status, res.error)
     storage.update_checkin(checkin["id"], attempt_count=attempt_number)
+
+    # Record + notify the trash answer once, before the wellness outcome's early returns.
+    if second_q and (res.extra or {}).get("second_digit") and not checkin.get("trash_result"):
+        sd = str(res.extra["second_digit"])
+        answer = "yes" if sd == settings.trash_yes_digit else ("no" if sd == settings.trash_no_digit else sd)
+        storage.update_checkin(checkin["id"], trash_result=answer)
+        if answer == "yes":
+            _notify_trash_yes(checkin)
+        # A "no" needs no alert — nothing to take out.
 
     label = _label(checkin["scheduled_time"])
     # ANGEL-05: pressing 1 (okay) is the only wellness pass.

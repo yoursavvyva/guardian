@@ -29,6 +29,7 @@ def init_db():
                 scheduled_time TEXT NOT NULL,
                 final_status TEXT NOT NULL DEFAULT 'pending',
                 wellness_result TEXT,
+                trash_result TEXT,
                 answered_attempt_number INTEGER,
                 escalation_sent INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at TEXT,
@@ -62,6 +63,8 @@ def init_db():
         cols = [r[1] for r in c.execute("PRAGMA table_info(guardian_checkins)").fetchall()]
         if "wellness_result" not in cols:                                  # ANGEL-05
             c.execute("ALTER TABLE guardian_checkins ADD COLUMN wellness_result TEXT")
+        if "trash_result" not in cols:                                     # trash-day rider
+            c.execute("ALTER TABLE guardian_checkins ADD COLUMN trash_result TEXT")
         for col, ddl in [                                                  # ANGEL-06 (call-back ack)
             ("acknowledged", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0"),
             ("acknowledged_at", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged_at TEXT"),

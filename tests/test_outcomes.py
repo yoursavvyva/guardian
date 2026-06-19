@@ -242,6 +242,99 @@ def test_ack_reminder_silent_in_quiet_hours():
         scheduler.telegram_notify.send = orig
 
 
+# ---- trash-day rider (Monday 12:00 PM second question) ----
+def _monday_noon_iso():
+    from datetime import timedelta
+    base = scheduler._now().replace(hour=12, minute=0, second=0, microsecond=0)
+    while base.weekday() != 0:  # advance to the next Monday
+        base += timedelta(days=1)
+    return base.isoformat()
+
+
+def test_is_trash_check_matches_day_and_time_only():
+    from datetime import datetime, timedelta
+    mon = _monday_noon_iso()
+    assert scheduler._is_trash_check({"scheduled_time": mon}) is True
+    # right day, wrong time (8 PM check) -> no rider
+    eve = datetime.fromisoformat(mon).replace(hour=20).isoformat()
+    assert scheduler._is_trash_check({"scheduled_time": eve}) is False
+    # right time, wrong day (Tuesday noon) -> no rider
+    tue = (datetime.fromisoformat(mon) + timedelta(days=1)).isoformat()
+    assert scheduler._is_trash_check({"scheduled_time": tue}) is False
+
+
+def test_provider_sends_second_question_and_surfaces_answer():
+    captured = {}
+    _mock_voiceapp({"state": "completed", "answeredAt": "x", "confirmed": True,
+                    "confirmDigit": "1", "secondDigit": "1"}, captured)
+    sq = {"message": "Trash tomorrow?", "accept_digits": ["1", "2"], "yes_digit": "1",
+          "reprompt": "r", "ack": {"1": "yes-ack", "2": "no-ack"}}
+    res = cp.ThreeCXProvider().place_call("test", "39514", second_question=sq)
+    b = captured["body"].get("secondQuestion") or {}
+    assert b.get("message") == "Trash tomorrow?", b
+    assert b.get("acceptDigits") == ["1", "2"], b
+    assert b.get("yesDigit") == "1", b
+    assert res.extra.get("second_digit") == "1", res.extra
+    # baseline calls (no second_question) must NOT add the field
+    captured2 = {}
+    _mock_voiceapp({"state": "completed", "answeredAt": "x", "confirmed": True, "confirmDigit": "1"}, captured2)
+    cp.ThreeCXProvider().place_call("test", "39514")
+    assert "secondQuestion" not in captured2["body"], "baseline call must stay unchanged"
+
+
+def test_scheduler_trash_yes_records_and_alerts():
+    import os as _os
+    storage.init_db()
+    _os.environ["GUARDIAN_MOCK_SECOND_DIGIT"] = "1"
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a[0] if a else ""), (True, "sent"))[1]
+    try:
+        cid = storage.create_checkin(_monday_noon_iso())
+        cp.set_mock_result("confirmed_ok")
+        scheduler._run_attempt(storage.get_checkin(cid))
+        cp.set_mock_result(None)
+        ci = storage.get_checkin(cid)
+        assert ci["trash_result"] == "yes", ci["trash_result"]
+        assert ci["final_status"] == CheckinStatus.ANSWERED, "wellness flow must be unaffected"
+        assert any("Trash Day" in str(m) for m in sent), "a 'yes' must alert"
+    finally:
+        scheduler.telegram_notify.send = orig
+        _os.environ.pop("GUARDIAN_MOCK_SECOND_DIGIT", None)
+
+
+def test_scheduler_trash_no_records_without_alert():
+    import os as _os
+    storage.init_db()
+    _os.environ["GUARDIAN_MOCK_SECOND_DIGIT"] = "2"
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a[0] if a else ""), (True, "sent"))[1]
+    try:
+        cid = storage.create_checkin(_monday_noon_iso())
+        cp.set_mock_result("confirmed_ok")
+        scheduler._run_attempt(storage.get_checkin(cid))
+        cp.set_mock_result(None)
+        ci = storage.get_checkin(cid)
+        assert ci["trash_result"] == "no", ci["trash_result"]
+        assert not any("Trash Day" in str(m) for m in sent), "a 'no' must not alert"
+    finally:
+        scheduler.telegram_notify.send = orig
+        _os.environ.pop("GUARDIAN_MOCK_SECOND_DIGIT", None)
+
+
+def test_non_trash_check_has_no_trash_question():
+    from datetime import datetime, timedelta
+    storage.init_db()
+    tue = (datetime.fromisoformat(_monday_noon_iso()) + timedelta(days=1)).isoformat()
+    cid = storage.create_checkin(tue)
+    cp.set_mock_result("confirmed_ok")
+    scheduler._run_attempt(storage.get_checkin(cid))
+    cp.set_mock_result(None)
+    ci = storage.get_checkin(cid)
+    assert not ci.get("trash_result"), "a non-Monday check must not record a trash answer"
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

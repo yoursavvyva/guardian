@@ -15,16 +15,19 @@ from app.config import settings
 
 
 class CallResult:
-    def __init__(self, status, error=None, provider="mock"):
+    def __init__(self, status, error=None, provider="mock", extra=None):
         self.status = status      # answered | missed | failed
         self.error = error
         self.provider = provider
+        # Optional side-channel for extra answers gathered in the same call beyond the
+        # wellness status — e.g. {"second_digit": "1"} for the Monday trash-day rider.
+        self.extra = extra or {}
 
 
 class CallProvider:
     name = "base"
 
-    def place_call(self, target_type, target_value) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
         raise NotImplementedError
 
 
@@ -39,7 +42,7 @@ def set_mock_result(result):
 class MockProvider(CallProvider):
     name = "mock"
 
-    def place_call(self, target_type, target_value, message=None) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
         valid = ("confirmed_ok", "needs_darcee", "answered_unconfirmed", "missed", "failed")
         result = _mock_override["result"] or settings.mock_result
         if result == "answered":          # legacy alias → a confirmed wellness pass
@@ -49,7 +52,9 @@ class MockProvider(CallProvider):
                                     "answered_unconfirmed", "missed", "failed"])
         if result not in valid:
             result = "confirmed_ok"
-        return CallResult(result, provider="mock")
+        # Simulate the trash-day answer so the rider can be exercised without a real call.
+        extra = {"second_digit": settings.mock_second_digit} if second_question else None
+        return CallResult(result, provider="mock", extra=extra)
 
 
 class TelnyxProvider(CallProvider):
@@ -57,7 +62,7 @@ class TelnyxProvider(CallProvider):
     Phase 1: NOT wired — returns a safe 'failed' so no real call is placed."""
     name = "telnyx"
 
-    def place_call(self, target_type, target_value) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
         if not (settings.telnyx_api_key and settings.telnyx_connection_id and settings.telnyx_from):
             return CallResult("failed", error="telnyx_not_configured", provider="telnyx")
         # Phase 2: POST https://api.telnyx.com/v2/calls then resolve answered/missed
@@ -73,7 +78,7 @@ class ThreeCXProvider(CallProvider):
     watching the call's answeredAt."""
     name = "3cx"
 
-    def place_call(self, target_type, target_value, message=None) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
         import json
         import time as _time
         import urllib.request
@@ -101,6 +106,17 @@ class ThreeCXProvider(CallProvider):
                 settings.needs_call_digit: settings.ack_needs_call,
             },
         }
+        # Optional Monday trash-day rider: a second DTMF question asked in the same call.
+        # second_question = {"message","accept_digits","yes_digit","reprompt","ack"}.
+        if second_question:
+            payload["secondQuestion"] = {
+                "message": second_question["message"],
+                "acceptDigits": second_question["accept_digits"],
+                "yesDigit": second_question["yes_digit"],
+                "window1Ms": settings.confirm_window1_ms,
+                "reprompt": second_question.get("reprompt"),
+                "confirmAck": second_question.get("ack"),
+            }
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
                                          data=json.dumps(payload).encode(),
@@ -118,6 +134,7 @@ class ThreeCXProvider(CallProvider):
         answered = False
         confirmed = False
         digit = ""              # ANGEL-05: which menu digit Mom pressed
+        second_digit = ""       # trash-day rider: which digit Mom pressed for question 2
         reason = None
         state = None
         while _time.time() < deadline:
@@ -138,6 +155,9 @@ class ThreeCXProvider(CallProvider):
                 pressed = st.get("digit")
             if pressed not in (None, ""):
                 digit = str(pressed)
+            sd = st.get("secondDigit")
+            if sd not in (None, ""):
+                second_digit = str(sd)
             if st.get("failureReason"):
                 reason = st.get("failureReason")
             state = (st.get("state") or "").lower()
@@ -147,11 +167,12 @@ class ThreeCXProvider(CallProvider):
         # ANGEL-05 outcome model — a connected call is NOT "Mom is okay".
         # She must press a menu key: 1 = okay, 2 = have Darcee call. No input = unconfirmed.
         if answered:
+            extra = {"second_digit": second_digit} if second_question else None
             if digit == settings.needs_call_digit:
-                return CallResult("needs_darcee", provider="3cx")
+                return CallResult("needs_darcee", provider="3cx", extra=extra)
             if digit == settings.okay_digit or confirmed:
-                return CallResult("confirmed_ok", provider="3cx")
-            return CallResult("answered_unconfirmed", provider="3cx")
+                return CallResult("confirmed_ok", provider="3cx", extra=extra)
+            return CallResult("answered_unconfirmed", provider="3cx", extra=extra)
         # Not answered: genuine no-answer vs TECHNICAL failure.
         no_answer = {"no_answer", "no-answer", "busy", "timeout", "local_hangup", "remote_hangup"}
         r = (reason or "").lower()

@@ -260,6 +260,63 @@ class Settings:
         except ValueError:
             return 8
 
+    # ---- Trash-day rider: a 2nd question asked only on the configured day's check ----
+    @property
+    def trash_enabled(self):
+        return env("GUARDIAN_TRASH_ENABLED", "true").lower() != "false"
+
+    @property
+    def trash_day(self):
+        # Day-of-week the trash question rides along (full English name, e.g. "Monday").
+        return env("GUARDIAN_TRASH_DAY", "Monday")
+
+    @property
+    def trash_time(self):
+        # Which scheduled check carries it (HH:MM — must match a GUARDIAN_SCHEDULE entry).
+        return env("GUARDIAN_TRASH_TIME", "12:00")
+
+    @property
+    def trash_message(self):
+        return env("GUARDIAN_TRASH_MESSAGE",
+                   "One more thing, Mom. Does the trash need to go out tomorrow? "
+                   "Press 1 for yes. Press 2 for no.")
+
+    @property
+    def trash_reprompt(self):
+        return env("GUARDIAN_TRASH_REPROMPT",
+                   "I didn't catch that. If the trash needs to go out tomorrow, press 1. "
+                   "If not, press 2.")
+
+    @property
+    def trash_yes_digit(self):
+        return env("GUARDIAN_TRASH_YES_DIGIT", "1")
+
+    @property
+    def trash_no_digit(self):
+        return env("GUARDIAN_TRASH_NO_DIGIT", "2")
+
+    @property
+    def trash_ack_yes(self):
+        return env("GUARDIAN_TRASH_ACK_YES",
+                   "Thank you, Mom. I'll let Darcee know the trash needs to go out tomorrow.")
+
+    @property
+    def trash_ack_no(self):
+        return env("GUARDIAN_TRASH_ACK_NO",
+                   "Okay, Mom. No trash tomorrow. Thank you.")
+
+    @property
+    def trash_extra_chat_ids(self):
+        # Additional Telegram chat IDs (besides TELEGRAM_CHAT_ID) to alert on a "yes" —
+        # e.g. Darcee's sister. Comma-separated. Empty until she sets up her account.
+        raw = env("GUARDIAN_TRASH_CHAT_IDS", "") or ""
+        return [s.strip() for s in raw.split(",") if s.strip()]
+
+    @property
+    def mock_second_digit(self):
+        # Test-only: which digit the mock provider simulates for the trash question.
+        return env("GUARDIAN_MOCK_SECOND_DIGIT", "1")
+
     @property
     def db_path(self):
         return env("GUARDIAN_DB", os.path.join(HERE, "data", "guardian.db"))

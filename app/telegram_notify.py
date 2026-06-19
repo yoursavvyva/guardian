@@ -23,17 +23,20 @@ def status():
     }
 
 
-def send(text, reply_markup=None):
+def send(text, reply_markup=None, chat_id=None):
     """Send a Telegram message. Returns (ok, detail). No-ops cleanly if unconfigured.
-    reply_markup (optional): a Telegram inline-keyboard dict (e.g. an 'I called her' button)."""
+    reply_markup (optional): a Telegram inline-keyboard dict (e.g. an 'I called her' button).
+    chat_id (optional): override the default recipient — used to also alert family
+    members (e.g. Darcee's sister) on the trash-day rider."""
     from datetime import datetime, timezone
+    target = chat_id or settings.telegram_chat_id
     _status["configured"] = configured()
-    if not configured():
+    if not (settings.telegram_token and target):
         _status["last_error"] = "not_configured"
         return False, "telegram_not_configured"
     try:
         payload = {
-            "chat_id": settings.telegram_chat_id,
+            "chat_id": target,
             "text": text,
             "disable_web_page_preview": True,
         }
