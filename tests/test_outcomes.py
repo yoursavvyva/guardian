@@ -303,7 +303,7 @@ def test_scheduler_trash_yes_records_and_alerts():
         _os.environ.pop("GUARDIAN_MOCK_SECOND_DIGIT", None)
 
 
-def test_scheduler_trash_no_records_without_alert():
+def test_scheduler_trash_no_records_and_alerts():
     import os as _os
     storage.init_db()
     _os.environ["GUARDIAN_MOCK_SECOND_DIGIT"] = "2"
@@ -317,10 +317,59 @@ def test_scheduler_trash_no_records_without_alert():
         cp.set_mock_result(None)
         ci = storage.get_checkin(cid)
         assert ci["trash_result"] == "no", ci["trash_result"]
-        assert not any("Trash Day" in str(m) for m in sent), "a 'no' must not alert"
+        assert any("does NOT need" in str(m) for m in sent), "a 'no' must now also alert"
     finally:
         scheduler.telegram_notify.send = orig
         _os.environ.pop("GUARDIAN_MOCK_SECOND_DIGIT", None)
+
+
+def _make_trash_checkin():
+    """Run a Monday-noon mock check that records a 'yes' trash answer; return its id."""
+    import os as _os
+    storage.init_db()
+    _os.environ["GUARDIAN_MOCK_SECOND_DIGIT"] = "1"
+    try:
+        cid = storage.create_checkin(_monday_noon_iso())
+        cp.set_mock_result("confirmed_ok")
+        scheduler._run_attempt(storage.get_checkin(cid))
+        cp.set_mock_result(None)
+        return cid
+    finally:
+        _os.environ.pop("GUARDIAN_MOCK_SECOND_DIGIT", None)
+
+
+def test_trash_ack_notifies_darcee_and_is_idempotent():
+    cid = _make_trash_checkin()
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a[0] if a else ""), (True, "sent"))[1]
+    try:
+        # the sister (a non-Darcee chat) taps "Got it"
+        ci, changed = scheduler.acknowledge_trash(cid, by="Sister", by_chat="99999")
+        assert changed and ci["trash_acknowledged"] == 1, ci
+        assert ci["trash_acknowledged_by"] == "Sister", ci
+        assert any("received Mom's trash answer" in str(m) for m in sent), "Darcee must be told"
+        # a second tap must NOT re-notify or flip anything
+        sent.clear()
+        _ci2, changed2 = scheduler.acknowledge_trash(cid, by="Sister", by_chat="99999")
+        assert changed2 is False and len(sent) == 0, "no duplicate ack/notify"
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_trash_ack_by_darcee_skips_redundant_ping():
+    from app.config import settings as _s
+    cid = _make_trash_checkin()
+    sent = []
+    orig = scheduler.telegram_notify.send
+    scheduler.telegram_notify.send = lambda *a, **k: (sent.append(a[0] if a else ""), (True, "sent"))[1]
+    try:
+        ci, changed = scheduler.acknowledge_trash(cid, by="Darcee", by_chat=str(_s.telegram_chat_id))
+        assert changed and ci["trash_acknowledged"] == 1
+        assert not any("received Mom's trash answer" in str(m) for m in sent), \
+            "Darcee acking her own copy shouldn't ping herself"
+    finally:
+        scheduler.telegram_notify.send = orig
 
 
 def test_non_trash_check_has_no_trash_question():

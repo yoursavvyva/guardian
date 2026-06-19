@@ -30,6 +30,9 @@ def init_db():
                 final_status TEXT NOT NULL DEFAULT 'pending',
                 wellness_result TEXT,
                 trash_result TEXT,
+                trash_acknowledged INTEGER NOT NULL DEFAULT 0,
+                trash_acknowledged_at TEXT,
+                trash_acknowledged_by TEXT,
                 answered_attempt_number INTEGER,
                 escalation_sent INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at TEXT,
@@ -63,8 +66,14 @@ def init_db():
         cols = [r[1] for r in c.execute("PRAGMA table_info(guardian_checkins)").fetchall()]
         if "wellness_result" not in cols:                                  # ANGEL-05
             c.execute("ALTER TABLE guardian_checkins ADD COLUMN wellness_result TEXT")
-        if "trash_result" not in cols:                                     # trash-day rider
-            c.execute("ALTER TABLE guardian_checkins ADD COLUMN trash_result TEXT")
+        for col, ddl in [                                                  # trash-day rider + its ack
+            ("trash_result", "ALTER TABLE guardian_checkins ADD COLUMN trash_result TEXT"),
+            ("trash_acknowledged", "ALTER TABLE guardian_checkins ADD COLUMN trash_acknowledged INTEGER NOT NULL DEFAULT 0"),
+            ("trash_acknowledged_at", "ALTER TABLE guardian_checkins ADD COLUMN trash_acknowledged_at TEXT"),
+            ("trash_acknowledged_by", "ALTER TABLE guardian_checkins ADD COLUMN trash_acknowledged_by TEXT"),
+        ]:
+            if col not in cols:
+                c.execute(ddl)
         for col, ddl in [                                                  # ANGEL-06 (call-back ack)
             ("acknowledged", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0"),
             ("acknowledged_at", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged_at TEXT"),
@@ -172,6 +181,19 @@ def acknowledge_checkin(checkin_id, by="darcee"):
         if cur.rowcount == 0:
             r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
             return dict(r) if r else None
+        r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def acknowledge_trash_checkin(checkin_id, by="sister"):
+    """Mark a trash-day answer as received/acknowledged. Returns the updated row (or None)."""
+    with _LOCK, _conn() as c:
+        c.execute(
+            "UPDATE guardian_checkins SET trash_acknowledged=1, trash_acknowledged_at=?, "
+            "trash_acknowledged_by=?, updated_at=? "
+            "WHERE id=? AND COALESCE(trash_acknowledged,0)=0",
+            (_now(), by, _now(), checkin_id),
+        )
         r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
         return dict(r) if r else None
 

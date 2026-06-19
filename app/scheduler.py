@@ -106,20 +106,55 @@ def _trash_question():
     }
 
 
-def _notify_trash_yes(checkin):
-    """Alert Darcee + any extra family chat IDs (sister) that the trash goes out tomorrow."""
-    label = _label(checkin["scheduled_time"])
+def _trash_tomorrow(checkin):
     try:
-        tomorrow = (datetime.fromisoformat(checkin["scheduled_time"]).astimezone(_tz())
-                    + timedelta(days=1)).strftime("%A")
+        return (datetime.fromisoformat(checkin["scheduled_time"]).astimezone(_tz())
+                + timedelta(days=1)).strftime("%A")
     except (ValueError, TypeError):
-        tomorrow = "tomorrow"
-    msg = ("🗑️ Trash Day\n\n"
-           f"Mom says the trash NEEDS to go out for {tomorrow}.\n"
-           f"(from the {label} check-in)")
-    telegram_notify.send(msg)
+        return "tomorrow"
+
+
+def _trash_ack_button(checkin_id):
+    """Inline 'Got it' button on the trash alert; the sister (or Darcee) taps to confirm receipt."""
+    return {"inline_keyboard": [[{"text": "✅ Got it", "callback_data": f"guardian_trash_ack:{checkin_id}"}]]}
+
+
+def _notify_trash(checkin, answer):
+    """Alert Darcee + extra family chat IDs (sister) of Mom's trash answer — YES or NO —
+    each with a 'Got it' button so the sister acknowledges she received it."""
+    label = _label(checkin["scheduled_time"])
+    tomorrow = _trash_tomorrow(checkin)
+    if answer == "yes":
+        line = f"Mom says the trash NEEDS to go out for {tomorrow}. 🗑️"
+    elif answer == "no":
+        line = f"Mom says the trash does NOT need to go out for {tomorrow}."
+    else:
+        line = f"Mom's trash answer for {tomorrow}: {answer}."
+    msg = ("🗑️ Trash Day\n\n" + line + f"\n(from the {label} check-in)\n\n"
+           "Tap below to confirm you got this.")
+    btn = _trash_ack_button(checkin["id"])
+    telegram_notify.send(msg, reply_markup=btn)
     for cid in settings.trash_extra_chat_ids:
-        telegram_notify.send(msg, chat_id=cid)
+        telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
+
+
+def acknowledge_trash(checkin_id, by="sister", by_chat=None):
+    """Mark a trash answer as received and tell Darcee her sister got it.
+    Returns (checkin, changed). Idempotent — only the first ack notifies Darcee."""
+    ci = storage.get_checkin(checkin_id)
+    if not ci or not ci.get("trash_result"):
+        return ci, False
+    if ci.get("trash_acknowledged"):
+        return ci, False  # already acknowledged — don't double-notify
+    ci = storage.acknowledge_trash_checkin(checkin_id, by=by)
+    # Tell Darcee it was received (skip the redundant ping if Darcee acked it herself).
+    if str(by_chat or "") != str(settings.telegram_chat_id):
+        ans = (ci or {}).get("trash_result")
+        verb = "needs to go out" if ans == "yes" else ("does NOT need to go out" if ans == "no" else str(ans))
+        telegram_notify.send(
+            f"✅ {by} confirmed they received Mom's trash answer — it {verb} "
+            f"for {_trash_tomorrow(ci)}. You're all set. 💛")
+    return ci, True
 
 
 # ---- attempt execution ----
@@ -141,13 +176,12 @@ def _run_attempt(checkin):
     storage.update_checkin(checkin["id"], attempt_count=attempt_number)
 
     # Record + notify the trash answer once, before the wellness outcome's early returns.
+    # Notify on BOTH yes and no, each with a "Got it" ack button for the sister.
     if second_q and (res.extra or {}).get("second_digit") and not checkin.get("trash_result"):
         sd = str(res.extra["second_digit"])
         answer = "yes" if sd == settings.trash_yes_digit else ("no" if sd == settings.trash_no_digit else sd)
         storage.update_checkin(checkin["id"], trash_result=answer)
-        if answer == "yes":
-            _notify_trash_yes(checkin)
-        # A "no" needs no alert — nothing to take out.
+        _notify_trash(checkin, answer)
 
     label = _label(checkin["scheduled_time"])
     # ANGEL-05: pressing 1 (okay) is the only wellness pass.

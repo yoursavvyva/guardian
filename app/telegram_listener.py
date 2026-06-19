@@ -31,11 +31,42 @@ def _handle_callback(cb):
     cb_id = cb.get("id")
     msg = cb.get("message") or {}
     chat = str((msg.get("chat") or {}).get("id") or "")
-    # Lock to Darcee's chat (same chat the alerts go to).
-    if settings.telegram_chat_id and chat and chat != str(settings.telegram_chat_id):
+    frm = cb.get("from") or {}
+    who = frm.get("first_name") or frm.get("username") or "Someone"
+    is_trash = data.startswith("guardian_trash_ack:")
+    # Authorize: needs_darcee acks are Darcee-only; trash acks also allow the sister
+    # (any chat in GUARDIAN_TRASH_CHAT_IDS), since she's the one confirming receipt.
+    allowed = {str(settings.telegram_chat_id)} if settings.telegram_chat_id else set()
+    if is_trash:
+        allowed |= {str(c) for c in settings.trash_extra_chat_ids}
+    if allowed and chat and chat not in allowed:
         if cb_id:
             try:
                 _api("answerCallbackQuery", callback_query_id=cb_id, text="Not authorized.")
+            except Exception:
+                pass
+        return
+    if is_trash:
+        try:
+            cid = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            cid = None
+        ci, changed = (None, False)
+        if cid is not None:
+            ci, changed = scheduler.acknowledge_trash(cid, by=str(who), by_chat=chat)
+        acked = bool(ci and ci.get("trash_acknowledged"))
+        if cb_id:
+            try:
+                _api("answerCallbackQuery", callback_query_id=cb_id, show_alert="true",
+                     text="✅ Thanks — got it. Darcee has been notified."
+                          if changed else ("Already acknowledged. 👍" if acked else "Couldn't find that one."))
+            except Exception:
+                pass
+        if msg.get("message_id"):
+            try:
+                _api("editMessageText", chat_id=chat, message_id=msg["message_id"],
+                     text=(msg.get("text") or "Trash Day") + f"\n\n✅ Acknowledged by {who}.",
+                     reply_markup=json.dumps({"inline_keyboard": []}))
             except Exception:
                 pass
         return
