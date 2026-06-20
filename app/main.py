@@ -205,6 +205,13 @@ class Handler(BaseHTTPRequestHandler):
             out = scheduler.handle_inbound_callback(
                 caller=body.get("caller"), digit=body.get("digit"), outcome=body.get("outcome"))
             return self._send(200, {"ok": True, **out})
+        if path == "/guardian/inbound/followup":
+            # ANGEL-08 add-on: a call-back follow-up answer (e.g. the recovered Monday
+            # trash question). Body: {checkin_id, key, digit}. Tracked separately from
+            # the wellness outcome — never changes the wellness status.
+            out = scheduler.record_callback_followup(
+                body.get("checkin_id"), body.get("key"), body.get("digit"))
+            return self._send(200, {**out})
         if path == "/guardian/manual-confirm":
             # ANGEL-10: resolve a specific check-in as manually OK (PMC button parity).
             cid = body.get("checkin_id")

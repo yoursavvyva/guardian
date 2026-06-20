@@ -326,9 +326,15 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
         else:
             outcome = CheckinStatus.CALLBACK_NO_RESPONSE
 
+    # Call-back-specific outcome LABELS (distinct from the canonical final_status used
+    # internally). These are what we report/store + return to the voice-app.
+    label = {"confirmed_ok": "callback_confirmed_ok",
+             "needs_darcee": "callback_needs_darcee",
+             CheckinStatus.CALLBACK_NO_RESPONSE: "callback_no_response"}[outcome]
+
     # Always record for reporting, regardless of outcome.
     storage.set_meta("last_callback_time", now.isoformat())
-    storage.set_meta("last_callback_outcome", outcome)
+    storage.set_meta("last_callback_outcome", label)
     if masked:
         storage.set_meta("last_callback_caller", masked)
 
@@ -339,7 +345,10 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
                 if reconciled else "")
         telegram_notify.send(
             "💚 Angel Call-Back\n\nMom called Angel back and confirmed she's okay (pressed 1)." + tail + " 💛")
-        return {"outcome": outcome, "checkin_id": cid, "reconciled": reconciled}
+        # Follow-ups (e.g. the recovered Monday trash question) are built AFTER reconcile
+        # so the missed Monday-noon check is detectable. They never affect the wellness result.
+        return {"outcome": label, "checkin_id": cid, "reconciled": reconciled,
+                "followups": _callback_followups(now)}
 
     if outcome == "needs_darcee":
         cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.NEEDS_DARCEE, "needs_call")
@@ -349,7 +358,8 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
             "This is not an emergency, but she would like you to call her.\n"
             "Tap below once you've called her.",
             reply_markup=_ack_button(cid))
-        return {"outcome": outcome, "checkin_id": cid, "reconciled": 0}
+        return {"outcome": label, "checkin_id": cid, "reconciled": 0,
+                "followups": _callback_followups(now)}
 
     # callback_no_response: she called but pressed nothing — does NOT satisfy the wellness check.
     cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.CALLBACK_NO_RESPONSE, None)
@@ -357,7 +367,76 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
         "🔔 Angel Call-Back\n\n"
         "Mom called Angel but didn't press 1 or 2, so the check-in isn't complete.\n"
         "She may just be checking in, but you may want to reach out to her to be sure.")
-    return {"outcome": outcome, "checkin_id": cid, "reconciled": 0}
+    # Still offer the trash follow-up (asked regardless of the wellness answer).
+    return {"outcome": label, "checkin_id": cid, "reconciled": 0,
+            "followups": _callback_followups(now)}
+
+
+# ---- ANGEL-08 add-on: extensible call-back follow-up questions (trash = the first) ----
+def _pending_trash_callback(now=None):
+    """The Monday-12:00-PM trash-rider check TODAY that hasn't captured a trash answer yet
+    (i.e. Mom missed it). Returns that check-in row, or None. This is the ONLY gate for the
+    trash follow-up on call-backs: `_is_trash_check` requires day==trash_day AND
+    time==trash_time, so a non-Monday call-back or the 8 PM check never qualifies."""
+    now = now or _now()
+    if not settings.trash_enabled:
+        return None
+    start, end = _today_bounds(now)
+    for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
+        if ci.get("source") == "inbound":
+            continue
+        if _is_trash_check(ci) and not ci.get("trash_result"):
+            return ci
+    return None
+
+
+def _callback_followups(now=None):
+    """Build the list of follow-up questions to ask after the wellness menu on a call-back.
+    EXTENSIBLE: each entry is a self-contained question the voice-app asks then reports via
+    /guardian/inbound/followup. Today only the recovered Monday trash question; add more keys
+    here for future task/reminder questions."""
+    now = now or _now()
+    out = []
+    tci = _pending_trash_callback(now)
+    if tci:
+        tq = _trash_question()
+        out.append({
+            "key": "trash",
+            "target_checkin_id": tci["id"],
+            "message": tq["message"],
+            "reprompt": tq["reprompt"],
+            "accept_digits": tq["accept_digits"],
+            "yes_digit": tq["yes_digit"],
+            "ack": tq["ack"],
+        })
+    return out
+
+
+def record_callback_followup(checkin_id, key, digit=None):
+    """Record a call-back follow-up answer SEPARATELY from the wellness outcome (a trash
+    answer must never change the wellness status). Dispatches by `key`; idempotent.
+    Returns a small result dict. Extend with new keys for future questions."""
+    digit = str(digit) if digit not in (None, "") else None
+    if key == "trash":
+        ci = storage.get_checkin(int(checkin_id)) if checkin_id else None
+        if not ci or not _is_trash_check(ci):
+            return {"ok": False, "key": key, "error": "not a trash check"}
+        if ci.get("trash_result"):
+            return {"ok": True, "key": key, "trash_outcome": ci["trash_result"], "already": True}
+        if digit == settings.trash_yes_digit:
+            answer, tout = "yes", "trash_needed"
+        elif digit == settings.trash_no_digit:
+            answer, tout = "no", "trash_not_needed"
+        else:
+            answer, tout = "unknown", "trash_unknown"
+        storage.update_checkin(ci["id"], trash_result=answer)
+        storage.add_audit("callback_trash", "mom (callback)", None, ci["id"], tout)
+        # yes/no reuse the SAME notification the original Monday call would have sent
+        # (🗑️ alert + sister + "Got it" button). 'unknown' is logged only — never blocks wellness.
+        if answer in ("yes", "no"):
+            _notify_trash(ci, answer)
+        return {"ok": True, "key": key, "trash_outcome": tout}
+    return {"ok": False, "key": key, "error": "unknown followup key"}
 
 
 # ---- ANGEL-10: Telegram control-button actions (explicit, auditable; NOT open commands) ----

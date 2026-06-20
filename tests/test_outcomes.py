@@ -402,14 +402,14 @@ def test_inbound_press1_satisfies_and_cancels_pending():
         cid = storage.create_checkin(scheduler._now().isoformat())
         storage.update_checkin(cid, next_attempt_at=scheduler._now().isoformat())
         out = scheduler.handle_inbound_callback(caller="39514", digit="1")
-        assert out["outcome"] == "confirmed_ok", out
+        assert out["outcome"] == "callback_confirmed_ok", out
         assert out["reconciled"] == 1, out
         sched = storage.get_checkin(cid)
         assert sched["final_status"] == CheckinStatus.ANSWERED, sched["final_status"]
         assert not sched["next_attempt_at"], "pending retry must be cancelled"
         inbound = storage.get_checkin(out["checkin_id"])
         assert inbound["source"] == "inbound" and inbound["wellness_result"] == "okay", inbound
-        assert storage.get_meta("last_callback_outcome") == "confirmed_ok"
+        assert storage.get_meta("last_callback_outcome") == "callback_confirmed_ok"
         assert storage.get_meta("last_callback_time")
     finally:
         scheduler.telegram_notify.send = orig
@@ -423,14 +423,14 @@ def test_inbound_press2_creates_needs_darcee_only():
     try:
         cid = storage.create_checkin(scheduler._now().isoformat())
         out = scheduler.handle_inbound_callback(caller="39514", digit="2")
-        assert out["outcome"] == "needs_darcee", out
+        assert out["outcome"] == "callback_needs_darcee", out
         inbound = storage.get_checkin(out["checkin_id"])
         assert inbound["final_status"] == CheckinStatus.NEEDS_DARCEE, inbound
         assert any(p["id"] == out["checkin_id"] for p in storage.unacked_needs_darcee()), \
             "press 2 must enter the call-back reminder loop"
         # the pre-existing pending scheduled check is untouched
         assert storage.get_checkin(cid)["final_status"] == CheckinStatus.PENDING
-        assert storage.get_meta("last_callback_outcome") == "needs_darcee"
+        assert storage.get_meta("last_callback_outcome") == "callback_needs_darcee"
     finally:
         scheduler.telegram_notify.send = orig
 
@@ -459,9 +459,9 @@ def test_inbound_outcome_inferred_from_digit_when_absent():
     storage.init_db()
     sent, orig = _silence_telegram()
     try:
-        assert scheduler.handle_inbound_callback(digit="1")["outcome"] == "confirmed_ok"
-        assert scheduler.handle_inbound_callback(digit="2")["outcome"] == "needs_darcee"
-        assert scheduler.handle_inbound_callback(digit="9")["outcome"] == CheckinStatus.CALLBACK_NO_RESPONSE
+        assert scheduler.handle_inbound_callback(digit="1")["outcome"] == "callback_confirmed_ok"
+        assert scheduler.handle_inbound_callback(digit="2")["outcome"] == "callback_needs_darcee"
+        assert scheduler.handle_inbound_callback(digit="9")["outcome"] == "callback_no_response"
     finally:
         scheduler.telegram_notify.send = orig
 
@@ -572,6 +572,121 @@ def test_status_line_reflects_pause():
         assert "PAUSED" not in scheduler.status_line()
     finally:
         storage.set_meta("paused_date", "")
+        scheduler.telegram_notify.send = orig
+
+
+# ---- ANGEL-08 add-on: Monday trash question recovered on a call-back ----
+def _today_noon_iso():
+    return scheduler._now().replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _as_trash_day():
+    """Make 'today' the trash day at noon so _is_trash_check matches regardless of weekday."""
+    import os as _os
+    _os.environ["GUARDIAN_TRASH_DAY"] = scheduler._now().strftime("%A")
+    _os.environ["GUARDIAN_TRASH_TIME"] = "12:00"
+
+
+def _restore_trash_env():
+    import os as _os
+    _os.environ.pop("GUARDIAN_TRASH_DAY", None)
+    _os.environ.pop("GUARDIAN_TRASH_TIME", None)
+
+
+def test_callback_offers_trash_only_for_missed_monday_noon():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    _as_trash_day()
+    try:
+        cid = storage.create_checkin(_today_noon_iso())          # the missed noon trash check
+        storage.update_checkin(cid, final_status="escalated")
+        out = scheduler.handle_inbound_callback(digit="1")
+        assert out["outcome"] == "callback_confirmed_ok", out["outcome"]
+        fu = out["followups"]
+        assert len(fu) == 1 and fu[0]["key"] == "trash" and fu[0]["target_checkin_id"] == cid, fu
+    finally:
+        _restore_trash_env()
+        scheduler.telegram_notify.send = orig
+
+
+def test_callback_no_trash_on_non_trash_day():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    import os as _os
+    now = scheduler._now()
+    other = "Sunday" if now.strftime("%A") != "Sunday" else "Saturday"
+    _os.environ["GUARDIAN_TRASH_DAY"] = other
+    _os.environ["GUARDIAN_TRASH_TIME"] = "12:00"
+    try:
+        storage.create_checkin(_today_noon_iso())
+        out = scheduler.handle_inbound_callback(digit="1")
+        assert out["followups"] == [], "non-trash-day call-back must not ask trash"
+    finally:
+        _restore_trash_env()
+        scheduler.telegram_notify.send = orig
+
+
+def test_callback_no_trash_for_evening_check():
+    """Even on the trash day, the 8 PM check is not a trash check -> no trash prompt."""
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    _as_trash_day()
+    try:
+        eve = scheduler._now().replace(hour=20, minute=0, second=0, microsecond=0).isoformat()
+        storage.create_checkin(eve)
+        out = scheduler.handle_inbound_callback(digit="1")
+        assert out["followups"] == [], "8 PM call-back must not ask trash"
+    finally:
+        _restore_trash_env()
+        scheduler.telegram_notify.send = orig
+
+
+def test_callback_trash_recording_separate_from_wellness():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    _as_trash_day()
+    try:
+        cid = storage.create_checkin(_today_noon_iso())
+        storage.update_checkin(cid, final_status="escalated")
+        # press 1 wellness -> reconciles the noon check to answered
+        scheduler.handle_inbound_callback(digit="1")
+        assert storage.get_checkin(cid)["final_status"] == CheckinStatus.ANSWERED
+        # trash YES -> trash_needed, recorded on the SAME row, wellness untouched
+        r = scheduler.record_callback_followup(cid, "trash", "1")
+        assert r["trash_outcome"] == "trash_needed", r
+        ci = storage.get_checkin(cid)
+        assert ci["trash_result"] == "yes", ci
+        assert ci["final_status"] == CheckinStatus.ANSWERED, "trash must NOT change wellness status"
+        assert any("Trash Day" in str(m) for m in sent), "a YES must fire the trash alert"
+        # idempotent: a second answer doesn't flip it
+        r2 = scheduler.record_callback_followup(cid, "trash", "2")
+        assert r2.get("already") and storage.get_checkin(cid)["trash_result"] == "yes"
+    finally:
+        _restore_trash_env()
+        scheduler.telegram_notify.send = orig
+
+
+def test_callback_trash_no_and_unknown_and_nontrash():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    _as_trash_day()
+    try:
+        no_cid = storage.create_checkin(_today_noon_iso())
+        assert scheduler.record_callback_followup(no_cid, "trash", "2")["trash_outcome"] == "trash_not_needed"
+        assert storage.get_checkin(no_cid)["trash_result"] == "no"
+
+        unk_cid = storage.create_checkin(_today_noon_iso())
+        sent.clear()
+        out = scheduler.record_callback_followup(unk_cid, "trash", None)
+        assert out["trash_outcome"] == "trash_unknown", out
+        assert storage.get_checkin(unk_cid)["trash_result"] == "unknown"
+        assert not any("Trash Day" in str(m) for m in sent), "no input must NOT alert"
+
+        # a non-trash check-in is rejected (e.g. evening row)
+        eve = storage.create_checkin(scheduler._now().replace(hour=20).isoformat())
+        assert scheduler.record_callback_followup(eve, "trash", "1")["ok"] is False
+    finally:
+        _restore_trash_env()
         scheduler.telegram_notify.send = orig
 
 
