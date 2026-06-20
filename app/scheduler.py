@@ -360,6 +360,91 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
     return {"outcome": outcome, "checkin_id": cid, "reconciled": 0}
 
 
+# ---- ANGEL-10: Telegram control-button actions (explicit, auditable; NOT open commands) ----
+def manual_confirm_ok(checkin_id, by="darcee", chat=None):
+    """Darcee taps 'Mom is OK' to manually resolve an ACTIVE check-in: status
+    manually_confirmed_ok, source telegram_darcee, retries/escalation cleared.
+    Staleness guard: only resolves a still-open (pending/escalated/missed) check, so a
+    stale button can never flip an already-resolved or newer check-in. Returns (ci, changed)."""
+    ci = storage.get_checkin(checkin_id) if checkin_id else None
+    if not ci:
+        return None, False
+    open_states = (CheckinStatus.PENDING, CheckinStatus.ESCALATED, CheckinStatus.MISSED)
+    if ci["final_status"] not in open_states:
+        return ci, False  # already resolved/terminal — ignore the (stale) tap
+    ci = storage.resolve_manual_ok(checkin_id, by=by)
+    storage.add_audit("mom_is_ok", by, chat, checkin_id, ci["scheduled_time"] if ci else None)
+    label = _label(ci["scheduled_time"]) if ci else ""
+    telegram_notify.send(
+        f"✅ You marked Mom OK for the {label} check. Retries and escalation are cleared. 💛")
+    return ci, True
+
+
+def trigger_check_now(by="darcee", chat=None):
+    """Place an on-demand Angel wellness call to Mom right now (real provider when live).
+    Creates a check-in tagged source=telegram_darcee and runs the first attempt; the normal
+    retry/escalation ladder then applies. The confirmation step lives in the Telegram UI."""
+    now = _now()
+    cid = storage.create_checkin(now.isoformat())
+    storage.update_checkin(cid, source="telegram_darcee")
+    storage.add_audit("call_now", by, chat, cid, "on-demand wellness call")
+    telegram_notify.send(f"☎️ Angel: placing a wellness call to Mom now (requested by {by}).")
+    _run_attempt(storage.get_checkin(cid))
+    return storage.get_checkin(cid)
+
+
+def is_paused_today(now=None):
+    """True if Darcee paused today's remaining scheduled checks (auto-clears tomorrow)."""
+    return storage.get_meta("paused_date") == (now or _now()).date().isoformat()
+
+
+def pause_today(by="darcee", chat=None):
+    now = _now()
+    storage.set_meta("paused_date", now.date().isoformat())
+    storage.add_audit("pause_today", by, chat, None, now.date().isoformat())
+    telegram_notify.send(
+        f"⏸ Angel: today's remaining wellness checks are PAUSED (by {by}). "
+        "In-progress checks finish; new ones won't start. Tap Resume to re-enable — auto-resumes tomorrow.")
+    return True
+
+
+def resume_checks(by="darcee", chat=None):
+    was_paused = is_paused_today()
+    storage.set_meta("paused_date", "")
+    storage.add_audit("resume", by, chat, None, "")
+    telegram_notify.send(
+        f"▶️ Angel: wellness checks RESUMED (by {by}). Next check: {next_scheduled_check() or 'n/a'}.")
+    return was_paused
+
+
+def status_line():
+    """Compact, read-only status summary for the Telegram 'Status' button."""
+    now = _now()
+    st = state()
+    paused = is_paused_today(now)
+    start, end = _today_bounds(now)
+    today = storage.checkins_between(start.isoformat(), end.isoformat(), limit=50)
+    done = sum(1 for c in today if c["final_status"] in (CheckinStatus.ANSWERED, CheckinStatus.MANUALLY_CONFIRMED_OK))
+    pend = sum(1 for c in today if c["final_status"] == CheckinStatus.PENDING)
+    esc = sum(1 for c in today if c["final_status"] == CheckinStatus.ESCALATED)
+    nd = sum(1 for c in today if c["final_status"] == CheckinStatus.NEEDS_DARCEE)
+    lines = [
+        "🛡️ Angel / Guardian status",
+        f"Provider: {settings.call_provider} · Scheduler: {'running' if st['running'] else 'stopped'}"
+        + (" · ⏸ PAUSED today" if paused else ""),
+        f"Schedule: {', '.join(settings.schedule)} ({settings.timezone})",
+        f"Next check: {('paused — resumes tomorrow' if paused else (st['next_scheduled_check'] or 'n/a'))}",
+        f"Today: {done} done · {pend} pending · {nd} needs-Darcee · {esc} escalated",
+    ]
+    pcb = storage.unacked_needs_darcee()
+    if pcb:
+        lines.append(f"⚠️ {len(pcb)} call-back(s) awaiting your 'I called Mom'.")
+    lc = storage.get_meta("last_callback_outcome")
+    if lc:
+        lines.append(f"Last call-back: {lc} @ {_label(storage.get_meta('last_callback_time') or '')}")
+    return "\n".join(lines)
+
+
 def _in_quiet_hours(now=None):
     """True if local time is within the no-reminder window (quiet_start..quiet_end, wrapping midnight)."""
     h = (now or _now()).hour
@@ -398,8 +483,10 @@ def _process_ack_reminders(now=None):
 # ---- tick ----
 def _tick():
     now = _now()
-    # 1) fire due scheduled checks (within the recent window only) — not before go-live date
-    for sched in (_scheduled_today(now) if _active(now) else []):
+    # 1) fire due scheduled checks (within the recent window only) — not before go-live date,
+    #    and not while Darcee has paused today's remaining checks (ANGEL-10).
+    fire = _active(now) and not is_paused_today(now)
+    for sched in (_scheduled_today(now) if fire else []):
         if sched <= now and (now - sched) <= timedelta(minutes=FIRE_WINDOW_MIN):
             if not storage.checkin_exists_for(sched.isoformat()):
                 cid = storage.create_checkin(sched.isoformat())

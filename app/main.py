@@ -53,6 +53,7 @@ def status():
     today = storage.checkins_between(s, e, limit=50)
     last = storage.last_checkin()
     answered = storage.last_answered()
+    good = (CheckinStatus.ANSWERED, CheckinStatus.MANUALLY_CONFIRMED_OK)
     missed_today = sum(1 for c in today if c["final_status"] in (CheckinStatus.MISSED, CheckinStatus.ESCALATED))
     needs_darcee_today = sum(1 for c in today if c["final_status"] == CheckinStatus.NEEDS_DARCEE)
     escalation_active = any(c["final_status"] == CheckinStatus.ESCALATED for c in today)
@@ -63,7 +64,7 @@ def status():
         today_status = "yellow"
     elif needs_darcee_today:
         today_status = "yellow"
-    elif today and all(c["final_status"] == CheckinStatus.ANSWERED for c in today):
+    elif today and all(c["final_status"] in good for c in today):
         today_status = "green"
     elif today:
         today_status = "yellow"
@@ -86,6 +87,8 @@ def status():
         # ANGEL-08: most recent inbound call-back from Mom (reporting surface).
         "last_callback_time": storage.get_meta("last_callback_time"),
         "last_callback_outcome": storage.get_meta("last_callback_outcome"),
+        # ANGEL-10: whether today's remaining scheduled checks are paused.
+        "paused_today": scheduler.is_paused_today(),
     }
 
 
@@ -93,7 +96,7 @@ def checkins_today():
     s, e, now = _today_bounds()
     today = storage.checkins_between(s, e, limit=50)
     sched = scheduler._scheduled_today(now)
-    completed = [c for c in today if c["final_status"] == CheckinStatus.ANSWERED]
+    completed = [c for c in today if c["final_status"] in (CheckinStatus.ANSWERED, CheckinStatus.MANUALLY_CONFIRMED_OK)]
     missed = [c for c in today if c["final_status"] in (CheckinStatus.MISSED, CheckinStatus.ESCALATED)]
     needs_darcee = [c for c in today if c["final_status"] == CheckinStatus.NEEDS_DARCEE]
     pending = [c for c in today if c["final_status"] == CheckinStatus.PENDING]
@@ -164,6 +167,9 @@ class Handler(BaseHTTPRequestHandler):
             q = self._qs()
             return self._send(200, {"attempts": storage.attempts_between(
                 q.get("checkin_id"), q.get("date_from"), q.get("date_to"))})
+        if path == "/guardian/audit":
+            q = self._qs()
+            return self._send(200, {"audit": storage.recent_audit(int(q.get("limit", 20)))})
         if path == "/guardian/config":
             return self._send(200, config_overview())
         return self._send(404, {"error": "not found"})
@@ -199,6 +205,20 @@ class Handler(BaseHTTPRequestHandler):
             out = scheduler.handle_inbound_callback(
                 caller=body.get("caller"), digit=body.get("digit"), outcome=body.get("outcome"))
             return self._send(200, {"ok": True, **out})
+        if path == "/guardian/manual-confirm":
+            # ANGEL-10: resolve a specific check-in as manually OK (PMC button parity).
+            cid = body.get("checkin_id")
+            if cid is None:
+                return self._send(400, {"error": "checkin_id required"})
+            ci, changed = scheduler.manual_confirm_ok(
+                int(cid), by=str(body.get("by") or "darcee"), chat=body.get("chat"))
+            return self._send(200, {"ok": changed, "changed": changed, "checkin": ci})
+        if path == "/guardian/pause":
+            scheduler.pause_today(by=str(body.get("by") or "darcee"), chat=body.get("chat"))
+            return self._send(200, {"ok": True, "paused_today": True})
+        if path == "/guardian/resume":
+            was = scheduler.resume_checks(by=str(body.get("by") or "darcee"), chat=body.get("chat"))
+            return self._send(200, {"ok": True, "was_paused": was, "paused_today": False})
         if path == "/guardian/test/mock-check":
             ci = scheduler.trigger_mock_check(result=body.get("result"))
             return self._send(200, {"ok": True, "checkin": ci})

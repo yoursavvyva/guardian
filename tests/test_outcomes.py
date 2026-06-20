@@ -480,6 +480,101 @@ def test_inbound_reconcile_skips_inbound_rows():
         scheduler.telegram_notify.send = orig
 
 
+# ---- ANGEL-10: Telegram control-button actions ----
+def test_manual_confirm_ok_resolves_and_is_stale_safe():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        cid = storage.create_checkin(scheduler._now().isoformat())
+        storage.update_checkin(cid, next_attempt_at=scheduler._now().isoformat(),
+                               final_status="escalated", escalation_sent=1)
+        ci, changed = scheduler.manual_confirm_ok(cid, by="darcee", chat="123")
+        assert changed, "an active/escalated check must resolve"
+        assert ci["final_status"] == CheckinStatus.MANUALLY_CONFIRMED_OK, ci["final_status"]
+        assert ci["source"] == "telegram_darcee" and ci["wellness_result"] == "okay", ci
+        assert not ci["next_attempt_at"], "retries/escalation must be cleared"
+        assert any(a["action"] == "mom_is_ok" and a["checkin_id"] == cid for a in storage.recent_audit()), \
+            "the tap must be logged with who/when"
+        # a SECOND (stale) tap on the now-resolved check is a no-op
+        _ci2, changed2 = scheduler.manual_confirm_ok(cid, by="darcee")
+        assert changed2 is False, "stale button must not re-resolve"
+        # unknown id and id 0 (no active) -> no change, no crash
+        ci3, changed3 = scheduler.manual_confirm_ok(999999, by="darcee")
+        assert changed3 is False and ci3 is None
+        assert scheduler.manual_confirm_ok(0, by="darcee")[1] is False
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_manual_confirm_does_not_touch_newer_answered_check():
+    """A stale 'Mom is OK' button (older id) must never flip a different/newer check-in."""
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        old = storage.create_checkin(scheduler._now().isoformat())   # still pending
+        new = scheduler.trigger_mock_check(result="confirmed_ok")["id"]  # already answered
+        # tapping the OLD button only ever targets `old`; `new` is untouched
+        scheduler.manual_confirm_ok(old, by="darcee")
+        assert storage.get_checkin(new)["final_status"] == CheckinStatus.ANSWERED, "newer check unchanged"
+        assert storage.get_checkin(old)["final_status"] == CheckinStatus.MANUALLY_CONFIRMED_OK
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_trigger_check_now_is_telegram_darcee_and_audited():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    cp.set_mock_result("confirmed_ok")
+    try:
+        ci = scheduler.trigger_check_now(by="test")
+        assert ci["source"] == "telegram_darcee", ci["source"]
+        assert ci["final_status"] == CheckinStatus.ANSWERED
+        assert any(a["action"] == "call_now" for a in storage.recent_audit())
+    finally:
+        cp.set_mock_result(None)
+        scheduler.telegram_notify.send = orig
+
+
+def test_pause_blocks_scheduled_then_resume_restores():
+    import os as _os
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    cp.set_mock_result("confirmed_ok")
+    try:
+        now = scheduler._now()
+        _os.environ["GUARDIAN_SCHEDULE"] = now.strftime("%H:%M")
+        slot = now.replace(second=0, microsecond=0).isoformat()
+        scheduler.pause_today(by="test")
+        assert scheduler.is_paused_today() is True
+        scheduler._tick()
+        assert storage.checkin_exists_for(slot) is None, "paused: scheduled check must NOT fire"
+        scheduler.resume_checks(by="test")
+        assert scheduler.is_paused_today() is False
+        scheduler._tick()
+        assert storage.checkin_exists_for(slot) is not None, "resumed: scheduled check fires"
+        assert any(a["action"] == "pause_today" for a in storage.recent_audit())
+        assert any(a["action"] == "resume" for a in storage.recent_audit())
+    finally:
+        cp.set_mock_result(None)
+        _os.environ.pop("GUARDIAN_SCHEDULE", None)
+        storage.set_meta("paused_date", "")
+        scheduler.telegram_notify.send = orig
+
+
+def test_status_line_reflects_pause():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        assert "Angel / Guardian status" in scheduler.status_line()
+        scheduler.pause_today(by="test")
+        assert "PAUSED" in scheduler.status_line()
+        scheduler.resume_checks(by="test")
+        assert "PAUSED" not in scheduler.status_line()
+    finally:
+        storage.set_meta("paused_date", "")
+        scheduler.telegram_notify.send = orig
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

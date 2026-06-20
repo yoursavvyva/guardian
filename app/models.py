@@ -8,6 +8,7 @@ class CheckinStatus:
     MISSED = "missed"          # all attempts failed, escalation handled
     ESCALATED = "escalated"    # urgent alert sent after max attempts
     CALLBACK_NO_RESPONSE = "callback_no_response"  # ANGEL-08: Mom called Angel back but pressed no key
+    MANUALLY_CONFIRMED_OK = "manually_confirmed_ok"  # ANGEL-10: Darcee resolved the check via a Telegram button
 
 
 class AttemptStatus:

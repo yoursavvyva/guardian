@@ -51,6 +51,15 @@ def init_db():
                 value TEXT,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS guardian_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor TEXT,
+                chat_id TEXT,
+                checkin_id INTEGER,
+                detail TEXT
+            );
             CREATE TABLE IF NOT EXISTS guardian_call_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scheduled_check_id INTEGER NOT NULL,
@@ -139,6 +148,38 @@ def get_meta(key, default=None):
 def get_meta_all():
     with _LOCK, _conn() as c:
         return {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM guardian_meta").fetchall()}
+
+
+# ---- audit log (ANGEL-10: who tapped which control button, and when) ----
+def add_audit(action, actor=None, chat_id=None, checkin_id=None, detail=None):
+    with _LOCK, _conn() as c:
+        c.execute(
+            "INSERT INTO guardian_audit (ts, action, actor, chat_id, checkin_id, detail) VALUES (?, ?, ?, ?, ?, ?)",
+            (_now(), action, actor, str(chat_id) if chat_id is not None else None, checkin_id, detail),
+        )
+    print(f"[guardian.audit] {action} by={actor} chat={chat_id} checkin={checkin_id} detail={detail}", flush=True)
+
+
+def recent_audit(limit=20):
+    with _LOCK, _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM guardian_audit ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]
+
+
+# ---- ANGEL-10: manual resolution of an active check-in via a Telegram button ----
+def resolve_manual_ok(checkin_id, by="darcee"):
+    """Mark a check-in manually confirmed OK (Darcee tapped 'Mom is OK'). Sets the
+    distinct status + source so the record shows a human resolved it, and clears any
+    pending retry. Returns the updated row (or None)."""
+    with _LOCK, _conn() as c:
+        c.execute(
+            "UPDATE guardian_checkins SET final_status='manually_confirmed_ok', wellness_result='okay', "
+            "source='telegram_darcee', acknowledged=1, acknowledged_at=?, acknowledged_by=?, "
+            "next_attempt_at=NULL, updated_at=? WHERE id=?",
+            (_now(), by, _now(), checkin_id),
+        )
+        r = c.execute("SELECT * FROM guardian_checkins WHERE id=?", (checkin_id,)).fetchone()
+        return dict(r) if r else None
 
 
 def update_checkin(checkin_id, **fields):
