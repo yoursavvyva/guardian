@@ -317,6 +317,27 @@ class Settings:
         # Test-only: which digit the mock provider simulates for the trash question.
         return env("GUARDIAN_MOCK_SECOND_DIGIT", "1")
 
+    # ---- ANGEL-09: Alexa wellness channel ----
+    @property
+    def alexa_token(self):
+        # Shared secret the Alexa skill (Lambda) sends as X-Guardian-Alexa-Token.
+        # Kept SEPARATE from the admin api_token since the Alexa route is public-facing.
+        return env("GUARDIAN_ALEXA_TOKEN", "")
+
+    @property
+    def alexa_enabled(self):
+        # Phase-2 grace-window deferral switch. DEFAULT FALSE = phone behaviour unchanged.
+        # (The /guardian/alexa/wellness route + reconcile work regardless of this flag.)
+        return env("GUARDIAN_ALEXA_ENABLED", "false").lower() == "true"
+
+    @property
+    def alexa_grace_minutes(self):
+        # Phase-2: how long to wait for an Alexa confirmation before the phone leg fires.
+        try:
+            return int(env("GUARDIAN_ALEXA_GRACE_MINUTES", "15"))
+        except ValueError:
+            return 15
+
     @property
     def db_path(self):
         return env("GUARDIAN_DB", os.path.join(HERE, "data", "guardian.db"))

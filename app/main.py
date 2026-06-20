@@ -176,8 +176,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if not self._authed():
-            return self._send(401, {"error": "unauthorized"})
         body = {}
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -185,6 +183,18 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(n).decode() or "{}")
         except Exception:
             body = {}
+        # ANGEL-09: the Alexa skill route authenticates with its OWN token (it is
+        # public-facing), kept separate from the admin token used by everything else.
+        if path == "/guardian/alexa/wellness":
+            tok = settings.alexa_token
+            if not tok:
+                return self._send(503, {"ok": False, "error": "alexa channel not configured"})
+            if self.headers.get("X-Guardian-Alexa-Token") != tok:
+                return self._send(401, {"ok": False, "error": "unauthorized"})
+            out = scheduler.handle_alexa_wellness(body.get("intent"))
+            return self._send(200 if out.get("ok") else 400, out)
+        if not self._authed():
+            return self._send(401, {"error": "unauthorized"})
         if path == "/guardian/acknowledge":
             # Mark a needs_darcee call-back as done (Darcee called Mom). Stops reminders.
             # Body: {"checkin_id": N}; if omitted, acknowledges the oldest un-acked one.

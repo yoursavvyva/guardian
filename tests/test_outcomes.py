@@ -690,6 +690,54 @@ def test_callback_trash_no_and_unknown_and_nontrash():
         scheduler.telegram_notify.send = orig
 
 
+# ---- ANGEL-09: Alexa wellness channel ----
+def test_alexa_okay_reconciles_pending_phone_check():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        cid = storage.create_checkin(scheduler._now().isoformat())   # a pending scheduled check
+        storage.update_checkin(cid, next_attempt_at=scheduler._now().isoformat())
+        out = scheduler.handle_alexa_wellness("okay")
+        assert out["ok"] and out["outcome"] == "alexa_confirmed_ok" and out["source"] == "alexa", out
+        assert out["reconciled"] == 1, out
+        sched = storage.get_checkin(cid)
+        assert sched["final_status"] == CheckinStatus.ANSWERED and not sched["next_attempt_at"], sched
+        ax = storage.get_checkin(out["checkin_id"])
+        assert ax["source"] == "alexa" and ax["wellness_result"] == "okay", ax
+        assert storage.get_meta("last_callback_outcome") == "alexa_confirmed_ok"
+        assert any("Alexa" in str(m) for m in sent), "Telegram must say it came from Alexa"
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_alexa_needs_darcee_opens_callback_loop():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        out = scheduler.handle_alexa_wellness("needs_darcee")
+        assert out["outcome"] == "alexa_needs_darcee", out
+        ax = storage.get_checkin(out["checkin_id"])
+        assert ax["final_status"] == CheckinStatus.NEEDS_DARCEE and ax["source"] == "alexa"
+        assert any(p["id"] == out["checkin_id"] for p in storage.unacked_needs_darcee())
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
+def test_alexa_rows_not_reconciled_and_unknown_intent():
+    storage.init_db()
+    sent, orig = _silence_telegram()
+    try:
+        # an earlier alexa 'okay' row must not be flipped by a later reconcile
+        first = scheduler.handle_alexa_wellness("okay")["checkin_id"]
+        scheduler.handle_alexa_wellness("okay")
+        assert storage.get_checkin(first)["final_status"] == CheckinStatus.ANSWERED
+        # unknown intent -> error, no row
+        bad = scheduler.handle_alexa_wellness("banana")
+        assert bad["ok"] is False, bad
+    finally:
+        scheduler.telegram_notify.send = orig
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

@@ -1,0 +1,44 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "angel",
+      "intents": [
+        {
+          "name": "OkayIntent",
+          "slots": [],
+          "samples": [
+            "I'm okay",
+            "I am okay",
+            "I'm okay today",
+            "I'm fine",
+            "I am fine",
+            "I'm good",
+            "I'm doing well",
+            "all good",
+            "everything is okay",
+            "tell Darcee I'm okay",
+            "let Darcee know I'm okay"
+          ]
+        },
+        {
+          "name": "NeedDarceeIntent",
+          "slots": [],
+          "samples": [
+            "I need Darcee",
+            "I need my daughter",
+            "have Darcee call me",
+            "please have Darcee call me",
+            "call Darcee",
+            "tell Darcee to call me",
+            "I want Darcee to call me",
+            "I'd like Darcee to call me"
+          ]
+        },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] }
+      ],
+      "types": []
+    }
+  }
+}

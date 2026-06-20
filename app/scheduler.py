@@ -293,8 +293,8 @@ def _reconcile_today_satisfied(now=None):
     open_states = (CheckinStatus.PENDING, CheckinStatus.MISSED, CheckinStatus.ESCALATED)
     count = 0
     for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
-        if ci.get("source") == "inbound":
-            continue
+        if ci.get("source") not in (None, "scheduled"):
+            continue  # only reconcile real SCHEDULED checks (not inbound/alexa/telegram rows)
         if ci["final_status"] in open_states:
             storage.update_checkin(ci["id"], final_status=CheckinStatus.ANSWERED,
                                    wellness_result="okay", next_attempt_at=None)
@@ -370,6 +370,41 @@ def handle_inbound_callback(caller=None, digit=None, outcome=None):
     # Still offer the trash follow-up (asked regardless of the wellness answer).
     return {"outcome": label, "checkin_id": cid, "reconciled": 0,
             "followups": _callback_followups(now)}
+
+
+# ---- ANGEL-09: Alexa wellness channel (reuses the ANGEL-08 reconcile) ----
+def handle_alexa_wellness(intent):
+    """Alexa relays Mom's spoken wellness response from home ("Alexa, tell Angel I'm okay"
+    / "…I need Darcee"). Reuses the ANGEL-08 reconcile so 'okay' SATISFIES + cancels today's
+    pending phone check, and 'needs_darcee' opens a call-back request. Records source='alexa';
+    Telegram wording clearly says the confirmation came via ALEXA. Returns a result dict."""
+    now = _now()
+    intent = (intent or "").strip().lower()
+    if intent in ("okay", "ok", "im_okay", "confirmed_ok", "1"):
+        cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.ANSWERED, "okay", source="alexa")
+        reconciled = _reconcile_today_satisfied(now)
+        storage.set_meta("last_callback_time", now.isoformat())
+        storage.set_meta("last_callback_outcome", "alexa_confirmed_ok")
+        storage.add_audit("alexa_okay", "mom (alexa)", None, cid, f"reconciled={reconciled}")
+        tail = (" Today's pending check is satisfied and any pending phone retries are cancelled."
+                if reconciled else "")
+        telegram_notify.send("💚 Alexa Check-In\n\nMom told Alexa she's okay (at home)." + tail + " 💛")
+        return {"ok": True, "outcome": "alexa_confirmed_ok", "checkin_id": cid,
+                "reconciled": reconciled, "source": "alexa"}
+    if intent in ("needs_darcee", "need_darcee", "darcee", "2"):
+        cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.NEEDS_DARCEE, "needs_call", source="alexa")
+        storage.set_meta("last_callback_time", now.isoformat())
+        storage.set_meta("last_callback_outcome", "alexa_needs_darcee")
+        storage.add_audit("alexa_needs_darcee", "mom (alexa)", None, cid, None)
+        telegram_notify.send(
+            "🟡 Alexa Check-In\n\n"
+            "Mom asked Alexa to have Darcee call her (at home).\n\n"
+            "This is not an emergency, but she would like you to call her.\n"
+            "Tap below once you've called her.",
+            reply_markup=_ack_button(cid))
+        return {"ok": True, "outcome": "alexa_needs_darcee", "checkin_id": cid,
+                "reconciled": 0, "source": "alexa"}
+    return {"ok": False, "error": "unknown intent", "source": "alexa"}
 
 
 # ---- ANGEL-08 add-on: extensible call-back follow-up questions (trash = the first) ----
