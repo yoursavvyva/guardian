@@ -7,6 +7,7 @@ class CheckinStatus:
     NEEDS_DARCEE = "needs_darcee"  # Mom pressed 2 — wants Darcee to call her (terminal, NOT a failure)
     MISSED = "missed"          # all attempts failed, escalation handled
     ESCALATED = "escalated"    # urgent alert sent after max attempts
+    CALLBACK_NO_RESPONSE = "callback_no_response"  # ANGEL-08: Mom called Angel back but pressed no key
 
 
 class AttemptStatus:
@@ -28,6 +29,9 @@ class Outcome:
     ANSWERED_UNCONFIRMED = "answered_unconfirmed"  # connected, no input (treat as a miss)
     MISSED = "missed"                        # no answer / busy
     FAILED = "failed"                        # technical/system error (NOT "Mom missed")
+    # ANGEL-08 inbound (Mom calls Angel back): same press-1/press-2 menu. A call with
+    # no key press is CALLBACK_NO_RESPONSE — it does NOT satisfy the wellness check.
+    CALLBACK_NO_RESPONSE = "callback_no_response"
 
 
 class TargetType:

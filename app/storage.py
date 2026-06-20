@@ -42,7 +42,13 @@ def init_db():
                 acknowledged_by TEXT,
                 reminder_count INTEGER NOT NULL DEFAULT 0,
                 last_reminder_at TEXT,
+                source TEXT NOT NULL DEFAULT 'scheduled',
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS guardian_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS guardian_call_attempts (
@@ -80,6 +86,7 @@ def init_db():
             ("acknowledged_by", "ALTER TABLE guardian_checkins ADD COLUMN acknowledged_by TEXT"),
             ("reminder_count", "ALTER TABLE guardian_checkins ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0"),
             ("last_reminder_at", "ALTER TABLE guardian_checkins ADD COLUMN last_reminder_at TEXT"),
+            ("source", "ALTER TABLE guardian_checkins ADD COLUMN source TEXT NOT NULL DEFAULT 'scheduled'"),  # ANGEL-08
         ]:
             if col not in cols:
                 c.execute(ddl)
@@ -98,6 +105,40 @@ def create_checkin(scheduled_time_iso):
             (scheduled_time_iso, _now(), _now()),
         )
         return cur.lastrowid
+
+
+def record_inbound_checkin(scheduled_time_iso, final_status, wellness_result=None, source="inbound"):
+    """ANGEL-08: persist a check-in that originated from Mom CALLING Angel (inbound),
+    not from a scheduled outbound attempt. No call attempts are attached."""
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            "INSERT INTO guardian_checkins "
+            "(scheduled_time, final_status, wellness_result, source, answered_attempt_number, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?)",
+            (scheduled_time_iso, final_status, wellness_result, source, _now(), _now()),
+        )
+        return cur.lastrowid
+
+
+# ---- meta key/value (ANGEL-08: last_callback_time / last_callback_outcome for reporting) ----
+def set_meta(key, value):
+    with _LOCK, _conn() as c:
+        c.execute(
+            "INSERT INTO guardian_meta (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, _now()),
+        )
+
+
+def get_meta(key, default=None):
+    with _LOCK, _conn() as c:
+        r = c.execute("SELECT value FROM guardian_meta WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else default
+
+
+def get_meta_all():
+    with _LOCK, _conn() as c:
+        return {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM guardian_meta").fetchall()}
 
 
 def update_checkin(checkin_id, **fields):

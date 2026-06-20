@@ -83,6 +83,9 @@ def status():
         ],
         "escalation_active": escalation_active,
         "next_check_at": scheduler.next_scheduled_check(),
+        # ANGEL-08: most recent inbound call-back from Mom (reporting surface).
+        "last_callback_time": storage.get_meta("last_callback_time"),
+        "last_callback_outcome": storage.get_meta("last_callback_outcome"),
     }
 
 
@@ -190,6 +193,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"ok": False, "error": "checkin not found"})
             acked = bool(ci.get("acknowledged"))
             return self._send(200, {"ok": acked, "acknowledged": acked, "checkin": ci})
+        if path == "/guardian/inbound/wellness":
+            # ANGEL-08: the voice-app POSTs here when Mom CALLS Angel back and runs the
+            # press-1/press-2 wellness menu. Body: {caller, digit, outcome, source}.
+            out = scheduler.handle_inbound_callback(
+                caller=body.get("caller"), digit=body.get("digit"), outcome=body.get("outcome"))
+            return self._send(200, {"ok": True, **out})
         if path == "/guardian/test/mock-check":
             ci = scheduler.trigger_mock_check(result=body.get("result"))
             return self._send(200, {"ok": True, "checkin": ci})

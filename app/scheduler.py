@@ -277,6 +277,89 @@ def acknowledge_and_confirm(checkin_id, by="darcee"):
     return ci, True
 
 
+# ---- ANGEL-08: inbound call-back (Mom calls Angel) ----
+def _today_bounds(now=None):
+    now = now or _now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def _reconcile_today_satisfied(now=None):
+    """An explicit press-1 call-back satisfies today's still-open SCHEDULED checks and
+    cancels any pending retry/escalation (approved design, Option 1). Inbound rows are
+    skipped. Returns how many scheduled check-ins were reconciled."""
+    now = now or _now()
+    start, end = _today_bounds(now)
+    open_states = (CheckinStatus.PENDING, CheckinStatus.MISSED, CheckinStatus.ESCALATED)
+    count = 0
+    for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
+        if ci.get("source") == "inbound":
+            continue
+        if ci["final_status"] in open_states:
+            storage.update_checkin(ci["id"], final_status=CheckinStatus.ANSWERED,
+                                   wellness_result="okay", next_attempt_at=None)
+            count += 1
+    return count
+
+
+def handle_inbound_callback(caller=None, digit=None, outcome=None):
+    """Mom called Angel back. Records the call-back + last_callback_time/outcome (reporting),
+    then routes by outcome:
+      press 1 (confirmed_ok)        -> satisfy today's pending check, cancel retries, 💚 ping
+      press 2 (needs_darcee)        -> open a call-back request (ack/reminder loop), 🟡 ping
+      no key  (callback_no_response)-> NOTHING is satisfied; 🔔 ping so Darcee can reach out
+    Only an explicit press-1 satisfies the wellness check; only press-2 makes a needs_darcee
+    request (per Darcee, 2026-06-19). Returns a small result dict."""
+    now = _now()
+    masked = mask_phone(caller) if caller else None
+    digit = str(digit) if digit not in (None, "") else None
+
+    # Normalize the outcome (prefer the explicit one from the voice-app; else infer from the digit).
+    if outcome == "callback_called_no_response":
+        outcome = CheckinStatus.CALLBACK_NO_RESPONSE
+    valid = ("confirmed_ok", "needs_darcee", CheckinStatus.CALLBACK_NO_RESPONSE)
+    if outcome not in valid:
+        if digit == settings.okay_digit:
+            outcome = "confirmed_ok"
+        elif digit == settings.needs_call_digit:
+            outcome = "needs_darcee"
+        else:
+            outcome = CheckinStatus.CALLBACK_NO_RESPONSE
+
+    # Always record for reporting, regardless of outcome.
+    storage.set_meta("last_callback_time", now.isoformat())
+    storage.set_meta("last_callback_outcome", outcome)
+    if masked:
+        storage.set_meta("last_callback_caller", masked)
+
+    if outcome == "confirmed_ok":
+        cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.ANSWERED, "okay")
+        reconciled = _reconcile_today_satisfied(now)
+        tail = (" Today's pending check is now satisfied and I've stopped any pending retries."
+                if reconciled else "")
+        telegram_notify.send(
+            "💚 Angel Call-Back\n\nMom called Angel back and confirmed she's okay (pressed 1)." + tail + " 💛")
+        return {"outcome": outcome, "checkin_id": cid, "reconciled": reconciled}
+
+    if outcome == "needs_darcee":
+        cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.NEEDS_DARCEE, "needs_call")
+        telegram_notify.send(
+            "🟡 Angel Call-Back\n\n"
+            "Mom called Angel and asked for a call from Darcee (pressed 2).\n\n"
+            "This is not an emergency, but she would like you to call her.\n"
+            "Tap below once you've called her.",
+            reply_markup=_ack_button(cid))
+        return {"outcome": outcome, "checkin_id": cid, "reconciled": 0}
+
+    # callback_no_response: she called but pressed nothing — does NOT satisfy the wellness check.
+    cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.CALLBACK_NO_RESPONSE, None)
+    telegram_notify.send(
+        "🔔 Angel Call-Back\n\n"
+        "Mom called Angel but didn't press 1 or 2, so the check-in isn't complete.\n"
+        "She may just be checking in, but you may want to reach out to her to be sure.")
+    return {"outcome": outcome, "checkin_id": cid, "reconciled": 0}
+
+
 def _in_quiet_hours(now=None):
     """True if local time is within the no-reminder window (quiet_start..quiet_end, wrapping midnight)."""
     h = (now or _now()).hour
