@@ -40,9 +40,14 @@ the Routine times in sync with `GUARDIAN_SCHEDULE`.)_
 ## Deploy / enable the route
 1. Set a token in `~/projects/guardian/.env`:
    `GUARDIAN_ALEXA_TOKEN=<long-random>` → `pm2 restart guardian-assistant`.
-2. Expose the route over HTTPS (nginx, per the VPS new-site guide:
-   `listen 31.220.96.150:443 ssl`, behind Cloudflare), proxying **only**
-   `/guardian/alexa/wellness` → `127.0.0.1:8101`. e.g. `angel.poppysuite.com`.
+2. Expose the route over HTTPS at **`angel.darceesellers.com`** (decided 2026-06-20),
+   proxying **only** `/guardian/alexa/wellness` → `127.0.0.1:8101` (nginx per the VPS
+   new-site guide: `listen 31.220.96.150:443 ssl`).
+   - **DNS PREREQUISITE:** darceesellers.com is hosted at BlueHost, so add an **A record
+     `angel` → 31.220.96.150** (the VPS) at the darceesellers.com DNS host. The cert
+     can't be issued until `angel.darceesellers.com` resolves to the VPS.
+   - Then nginx server block + certbot for `angel.darceesellers.com`; proxy only the one
+     path, return 404 for everything else.
 3. Put the same URL + token in the Alexa-hosted skill (see `alexa-skill/README.md`).
 4. Test "tell Angel I'm okay" against **Darcee's** device first → expect the 💚 Telegram.
 
