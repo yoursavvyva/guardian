@@ -23,12 +23,14 @@ no Drop In / camera / video permission and never invokes any.**
 4. **Test** tab (or a device): "tell Angel I'm okay" → expect Guardian Telegram
    "💚 Alexa Check-In…". Test against **Darcee's** account/device first.
 
-## Get it onto Mom's Echo devices
-- **If Mom's Echos are on Darcee's Amazon account** → the skill works in **development
-  mode** on those devices immediately. (Simplest.)
-- **If Mom's Echos are on Mom's own account** → use **Skill Beta Testing** (free, no
-  public certification): Distribution → Beta Test → invite Mom's Amazon email → she taps
-  the link to enable "Angel". No account linking is needed (single fixed Mom + Guardian).
+## Get it onto Mom's Echo devices — PLAN: Mom's own Amazon account
+Mom's Echos stay on **her own Amazon account** (decided 2026-06-19), so:
+- Use **Skill Beta Testing** (free, no public certification): Distribution → Beta Test →
+  invite Mom's Amazon email → she taps the link to enable "Angel". No account linking
+  needed (single fixed Mom + Guardian).
+- Bonus: her own account gives her a distinct Alexa **contact**, so Darcee's **manual**
+  Drop In / video (Echo Show 11) / chat works cleanly — set up separately in the Alexa
+  app (add contact + Mom enables Drop In permission). Angel never touches that.
 
 ## Endpoint
 `POST /guardian/alexa/wellness`  · header `X-Guardian-Alexa-Token: <token>`

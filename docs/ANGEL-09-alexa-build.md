@@ -46,10 +46,26 @@ the Routine times in sync with `GUARDIAN_SCHEDULE`.)_
 3. Put the same URL + token in the Alexa-hosted skill (see `alexa-skill/README.md`).
 4. Test "tell Angel I'm okay" against **Darcee's** device first → expect the 💚 Telegram.
 
-## Amazon account decision
-Use whichever account owns Mom's Echos:
-- **Mom's account** → free **Skill Beta** invite to her email.
-- **Darcee's/dev account** → **dev mode** (works directly).
+## Amazon account decision — DECIDED: Mom's own Amazon account
+**Plan (Darcee, 2026-06-19): Mom's Echo Show 11 + Echo Dot stay on _Mom's own Amazon
+account_.**
+- **Angel skill** reaches her devices via a free **Skill Beta** invite to her Amazon
+  email (no public certification; she taps the link to enable "Angel"). See
+  `alexa-skill/README.md`.
+- This also gives Mom a distinct Alexa **contact identity**, which is what makes
+  Darcee's **manual Drop In / video / chat** work cleanly (see next section).
+
+## Manual Drop In / video / chat (separate from Angel — Darcee-controlled)
+This is **not** part of Angel/Guardian and is **never automated** — it's the normal Alexa
+communications layer, initiated only by Darcee. With Mom on her own account:
+1. In each Alexa app, add the other as a **contact** (phone-number based).
+2. On Mom's devices: **enable Drop In** and **grant Darcee permission** (Settings →
+   Communications → Drop In). Mom can revoke anytime — it's her control.
+3. Darcee drops in via "Alexa, drop in on Mom" or the Alexa app.
+   - **Video** Drop In works to the **Echo Show 11** (has a camera), from Darcee's Alexa
+     app or her own Echo Show. The **Echo Dot is audio-only** (no camera).
+- Angel's skill, route, and Guardian have **no** Drop In / camera / video permission and
+  cannot initiate any of this; it stays manual and Mom-permissioned.
 
 ## Phase 2 (NOT enabled yet — keeps phone behaviour unchanged)
 The "Alexa-first, phone only if no confirmation in **15 min**" deferral is **config-gated
