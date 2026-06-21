@@ -2,7 +2,16 @@
 Guardian scheduler — stdlib background thread (no external deps).
 
 Each day it fires the configured wellness checks (default 11:00, 16:00, 20:30
-America/New_York). Per check it runs an attempt ladder with retries:
+America/New_York).
+
+Option B — Alexa is the preferred at-home channel: when a check-in window opens,
+Guardian WAITS GUARDIAN_ALEXA_GRACE_MINUTES (default 15) for Mom to confirm via
+Alexa ("Alexa, tell Guardian Angel I'm okay"). An Alexa confirmation during (or
+just before) the window satisfies the check and CANCELS the phone call. Only if no
+Alexa confirmation arrives in the grace period does Angel place the fallback call.
+Set GUARDIAN_ALEXA_GRACE_MINUTES=0 for the legacy call-first behavior.
+
+When Angel does call, it runs an attempt ladder with retries:
 
   attempt 1 -> Mom's 3CX extension
   wait GUARDIAN_RETRY_MINUTES (default 20)
@@ -302,6 +311,41 @@ def _reconcile_today_satisfied(now=None):
     return count
 
 
+# ---- Option B: Alexa-preferred at-home channel (grace period before Angel calls) ----
+def _alexa_handled_window(since_dt):
+    """True if Mom already used the Alexa channel (said okay OR asked for Darcee) at or
+    after `since_dt`. Used at window-open so a proactive Alexa check-in just BEFORE the
+    slot stops Guardian from opening a phone window at all. Scoped to the alexa_* meta
+    outcomes so a phone call-back never trips it."""
+    if storage.get_meta("last_callback_outcome") not in ("alexa_confirmed_ok", "alexa_needs_darcee"):
+        return False
+    raw = storage.get_meta("last_callback_time")
+    try:
+        return datetime.fromisoformat(raw) >= since_dt
+    except (TypeError, ValueError):
+        return False
+
+
+def _cancel_open_scheduled_calls(now=None):
+    """An Alexa 'I need Darcee' during the grace window means Mom has engaged from home —
+    close today's still-open SCHEDULED phone windows and cancel their (deferred) calls so
+    Angel doesn't ring her for a wellness check right after. Closes them as ANSWERED with
+    wellness_result='needs_call' (NOT a second needs_darcee row — the inbound Alexa row owns
+    the call-back request + ack loop). Returns how many were cancelled."""
+    now = now or _now()
+    start, end = _today_bounds(now)
+    open_states = (CheckinStatus.PENDING, CheckinStatus.MISSED, CheckinStatus.ESCALATED)
+    count = 0
+    for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
+        if ci.get("source") not in (None, "scheduled"):
+            continue
+        if ci["final_status"] in open_states:
+            storage.update_checkin(ci["id"], final_status=CheckinStatus.ANSWERED,
+                                   wellness_result="needs_call", next_attempt_at=None)
+            count += 1
+    return count
+
+
 def handle_inbound_callback(caller=None, digit=None, outcome=None):
     """Mom called Angel back. Records the call-back + last_callback_time/outcome (reporting),
     then routes by outcome:
@@ -393,9 +437,10 @@ def handle_alexa_wellness(intent):
                 "reconciled": reconciled, "source": "alexa"}
     if intent in ("needs_darcee", "need_darcee", "darcee", "2"):
         cid = storage.record_inbound_checkin(now.isoformat(), CheckinStatus.NEEDS_DARCEE, "needs_call", source="alexa")
+        cancelled = _cancel_open_scheduled_calls(now)  # don't phone-check her right after she used Alexa
         storage.set_meta("last_callback_time", now.isoformat())
         storage.set_meta("last_callback_outcome", "alexa_needs_darcee")
-        storage.add_audit("alexa_needs_darcee", "mom (alexa)", None, cid, None)
+        storage.add_audit("alexa_needs_darcee", "mom (alexa)", None, cid, f"cancelled={cancelled}")
         telegram_notify.send(
             "🟡 Alexa Check-In\n\n"
             "Mom asked Alexa to have Darcee call her (at home).\n\n"
@@ -403,7 +448,7 @@ def handle_alexa_wellness(intent):
             "Tap below once you've called her.",
             reply_markup=_ack_button(cid))
         return {"ok": True, "outcome": "alexa_needs_darcee", "checkin_id": cid,
-                "reconciled": 0, "source": "alexa"}
+                "reconciled": cancelled, "source": "alexa"}
     return {"ok": False, "error": "unknown intent", "source": "alexa"}
 
 
@@ -600,22 +645,52 @@ def _tick():
     # 1) fire due scheduled checks (within the recent window only) — not before go-live date,
     #    and not while Darcee has paused today's remaining checks (ANGEL-10).
     fire = _active(now) and not is_paused_today(now)
+    grace = settings.alexa_grace_minutes
     for sched in (_scheduled_today(now) if fire else []):
         if sched <= now and (now - sched) <= timedelta(minutes=FIRE_WINDOW_MIN):
             if not storage.checkin_exists_for(sched.isoformat()):
+                # Option B: if Mom already used Alexa at/just-before this window, don't open
+                # a phone window at all — the inbound Alexa check-in is the record.
+                if grace and _alexa_handled_window(sched - timedelta(minutes=grace)):
+                    continue
                 cid = storage.create_checkin(sched.isoformat())
-                telegram_notify.send(f"🛡️ Guardian: starting the {_label(sched.isoformat())} wellness check.")
-                _run_attempt(storage.get_checkin(cid))
-    # 2) process due retries on open check-ins
+                if grace:
+                    # Open the window and WAIT for Alexa; defer Angel's first call by the
+                    # grace period (reuses the retry path below). An Alexa "okay" during the
+                    # grace window reconciles this row + clears next_attempt_at -> no call.
+                    first_call = sched + timedelta(minutes=grace)
+                    storage.update_checkin(cid, next_attempt_at=first_call.isoformat())
+                    telegram_notify.send(
+                        f"🛡️ Guardian: the {_label(sched.isoformat())} check-in window is open. "
+                        f"Waiting for Mom's Alexa check-in — Angel will call by {_label(first_call.isoformat())} "
+                        f"if she hasn't confirmed.")
+                else:
+                    telegram_notify.send(f"🛡️ Guardian: starting the {_label(sched.isoformat())} wellness check.")
+                    _run_attempt(storage.get_checkin(cid))
+    # 2) process due retries on open check-ins (and the Option-B deferred first call)
     for ci in storage.open_checkins():
         nxt = ci.get("next_attempt_at")
-        if nxt:
+        if not nxt:
+            continue
+        try:
+            due = datetime.fromisoformat(nxt) <= now
+        except ValueError:
+            due = False
+        if not due:
+            continue
+        # The deferred FIRST call (no attempts yet) respects the same go-live/pause gate as
+        # step 1, and won't fire for a stale window (e.g. a check that sat paused all day).
+        if (ci.get("attempt_count") or 0) == 0:
             try:
-                due = datetime.fromisoformat(nxt) <= now
-            except ValueError:
-                due = False
-            if due:
-                _run_attempt(ci)
+                sched_dt = datetime.fromisoformat(ci["scheduled_time"])
+                stale = (now - sched_dt) > timedelta(minutes=grace + FIRE_WINDOW_MIN + 1)
+            except (ValueError, TypeError, KeyError):
+                stale = False
+            if not fire or stale:
+                if stale:
+                    storage.update_checkin(ci["id"], next_attempt_at=None)
+                continue
+        _run_attempt(ci)
     # 3) re-nudge un-acknowledged call-back requests (ANGEL-06)
     _process_ack_reminders(now)
 

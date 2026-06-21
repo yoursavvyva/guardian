@@ -78,6 +78,18 @@ class Settings:
             return 3
 
     @property
+    def alexa_grace_minutes(self):
+        # Option B (Alexa-preferred at home): when a check-in window opens, Guardian
+        # waits this many minutes for Mom to confirm via Alexa ("Alexa, tell Guardian
+        # Angel I'm okay") BEFORE Angel places the fallback phone call. An Alexa
+        # confirmation during (or just before) the window cancels the call entirely.
+        # Set to 0 to call immediately (legacy call-first behavior).
+        try:
+            return max(0, int(env("GUARDIAN_ALEXA_GRACE_MINUTES", "15")))
+        except ValueError:
+            return 15
+
+    @property
     def port(self):
         try:
             return int(env("GUARDIAN_PORT", "8101"))

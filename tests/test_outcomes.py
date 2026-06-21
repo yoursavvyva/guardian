@@ -738,6 +738,188 @@ def test_alexa_rows_not_reconciled_and_unknown_intent():
         scheduler.telegram_notify.send = orig
 
 
+# ---- Option B: Alexa-preferred at-home channel (grace period before Angel calls) ----
+# These tests drive the full _tick() with a single 12:00 slot, so they use their OWN
+# temp DB (the module DB is shared and would collide on today's-noon scheduled_time).
+_OPTIONB_PREV_DB = []
+
+
+def _optionb_env(grace="15"):
+    import os as _os
+    import tempfile
+    _OPTIONB_PREV_DB.append(_os.environ.get("GUARDIAN_DB"))
+    _os.environ["GUARDIAN_DB"] = tempfile.mktemp(suffix=".db")
+    _os.environ["GUARDIAN_SCHEDULE"] = "12:00"
+    _os.environ["GUARDIAN_ALEXA_GRACE_MINUTES"] = grace
+    _os.environ.pop("GUARDIAN_START_DATE", None)
+    storage.init_db()  # init the FRESH isolated DB (tests may also call init_db first on the shared one)
+
+
+def _optionb_cleanup():
+    import os as _os
+    _os.environ.pop("GUARDIAN_SCHEDULE", None)
+    _os.environ.pop("GUARDIAN_ALEXA_GRACE_MINUTES", None)
+    prev = _OPTIONB_PREV_DB.pop() if _OPTIONB_PREV_DB else None
+    if prev is None:
+        _os.environ.pop("GUARDIAN_DB", None)
+    else:
+        _os.environ["GUARDIAN_DB"] = prev
+
+
+def test_optionb_window_opens_deferred_no_immediate_call():
+    """When the window opens, Guardian creates a waiting row and DEFERS the first call
+    by the grace period — Angel must not ring during the grace window."""
+    storage.init_db()
+    _optionb_env()
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        scheduler._now = lambda: noon
+        scheduler._tick()
+        cid = storage.checkin_exists_for(noon.isoformat())
+        assert cid, "the window must open a waiting check-in row"
+        row = storage.get_checkin(cid)
+        assert (row.get("attempt_count") or 0) == 0, "Angel must NOT call during the grace window"
+        assert row["next_attempt_at"], "the deferred first call must be queued"
+        assert row["final_status"] == CheckinStatus.PENDING
+        assert any("window is open" in str(m) for m in sent), "should announce the open window"
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        _optionb_cleanup()
+
+
+def test_optionb_alexa_okay_in_grace_cancels_call():
+    """An Alexa 'I'm okay' during the grace window satisfies the check and cancels the
+    deferred phone call — a later tick must place no call."""
+    storage.init_db()
+    _optionb_env()
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        scheduler._now = lambda: noon
+        scheduler._tick()
+        cid = storage.checkin_exists_for(noon.isoformat())
+        # Mom confirms via Alexa at 12:05
+        scheduler._now = lambda: noon.replace(minute=5)
+        out = scheduler.handle_alexa_wellness("okay")
+        assert out["reconciled"] == 1, out
+        row = storage.get_checkin(cid)
+        assert row["final_status"] == CheckinStatus.ANSWERED
+        assert not row["next_attempt_at"], "deferred call must be cancelled"
+        # a later tick (past grace) must NOT call
+        scheduler._now = lambda: noon.replace(minute=20)
+        scheduler._tick()
+        assert (storage.get_checkin(cid).get("attempt_count") or 0) == 0, "no call after Alexa confirmation"
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        _optionb_cleanup()
+
+
+def test_optionb_call_fires_when_no_alexa_in_grace():
+    """If no Alexa confirmation arrives, the deferred call fires once the grace period ends."""
+    storage.init_db()
+    _optionb_env()
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        scheduler._now = lambda: noon
+        scheduler._tick()  # opens the waiting window
+        cid = storage.checkin_exists_for(noon.isoformat())
+        # grace elapses with no Alexa -> tick at 12:15 fires the fallback call
+        cp.set_mock_result("confirmed_ok")
+        scheduler._now = lambda: noon.replace(minute=15)
+        scheduler._tick()
+        cp.set_mock_result(None)
+        row = storage.get_checkin(cid)
+        assert (row.get("attempt_count") or 0) >= 1, "Angel must call after grace with no Alexa"
+        assert row["final_status"] == CheckinStatus.ANSWERED, "confirmed_ok on the fallback call"
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        cp.set_mock_result(None)
+        _optionb_cleanup()
+
+
+def test_optionb_alexa_before_window_skips_phone_window():
+    """A proactive Alexa 'okay' just before the slot stops Guardian opening a phone window."""
+    storage.init_db()
+    _optionb_env()
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        # Mom proactively says okay at 11:50
+        scheduler._now = lambda: noon.replace(hour=11, minute=50)
+        scheduler.handle_alexa_wellness("okay")
+        # window opens at noon -> must be SKIPPED (no phone row)
+        scheduler._now = lambda: noon
+        scheduler._tick()
+        assert not storage.checkin_exists_for(noon.isoformat()), "phone window must be skipped"
+        # ...and still no row/call at 12:15
+        scheduler._now = lambda: noon.replace(minute=15)
+        scheduler._tick()
+        assert not storage.checkin_exists_for(noon.isoformat())
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        _optionb_cleanup()
+
+
+def test_optionb_alexa_needs_darcee_in_grace_cancels_call():
+    """An Alexa 'I need Darcee' during grace cancels the deferred wellness call (Mom has
+    engaged from home) while the inbound needs_darcee row drives the call-back."""
+    storage.init_db()
+    _optionb_env()
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        scheduler._now = lambda: noon
+        scheduler._tick()
+        cid = storage.checkin_exists_for(noon.isoformat())
+        scheduler._now = lambda: noon.replace(minute=5)
+        out = scheduler.handle_alexa_wellness("needs_darcee")
+        assert out["outcome"] == "alexa_needs_darcee", out
+        assert out["reconciled"] >= 1, "the scheduled window's call must be cancelled"
+        row = storage.get_checkin(cid)
+        assert not row["next_attempt_at"], "deferred call must be cancelled"
+        # later tick: no wellness call placed
+        scheduler._now = lambda: noon.replace(minute=20)
+        scheduler._tick()
+        assert (storage.get_checkin(cid).get("attempt_count") or 0) == 0
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        _optionb_cleanup()
+
+
+def test_optionb_grace_zero_is_legacy_call_first():
+    """GUARDIAN_ALEXA_GRACE_MINUTES=0 keeps the old behavior: call immediately at the slot."""
+    storage.init_db()
+    _optionb_env(grace="0")
+    sent, orig = _silence_telegram()
+    orig_now = scheduler._now
+    try:
+        noon = orig_now().replace(hour=12, minute=0, second=0, microsecond=0)
+        cp.set_mock_result("confirmed_ok")
+        scheduler._now = lambda: noon
+        scheduler._tick()
+        cp.set_mock_result(None)
+        cid = storage.checkin_exists_for(noon.isoformat())
+        assert cid and (storage.get_checkin(cid).get("attempt_count") or 0) >= 1, \
+            "grace=0 must call immediately at the slot"
+    finally:
+        scheduler._now = orig_now
+        scheduler.telegram_notify.send = orig
+        cp.set_mock_result(None)
+        _optionb_cleanup()
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
