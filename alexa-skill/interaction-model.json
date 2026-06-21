@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "angel",
+      "invocationName": "guardian angel",
       "intents": [
         {
           "name": "OkayIntent",
