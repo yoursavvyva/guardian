@@ -128,6 +128,64 @@ def config_overview():
     }
 
 
+# ---- ANGEL-09b: direct Alexa custom-endpoint (replaces the Alexa-hosted Lambda) ----
+# Guardian answers Alexa itself — no second network hop / Lambda cold-start, so no timeout.
+# Spoken lines mirror the old lambda; Mom hears a clear confirmation instead of an error.
+ALEXA_LAUNCH = ("Hi Mom, it's Angel. If you're okay, say: I'm okay. "
+                "Or, if you'd like Darcee to call you, say: I need Darcee.")
+ALEXA_OKAY = "Wonderful. I've let Darcee know you're doing okay. Have a lovely day, Mom."
+ALEXA_NEEDS = "Okay, I've let Darcee know you'd like a call. She'll reach out soon."
+ALEXA_HELP = "Say: I'm okay. Or say: I need Darcee."
+ALEXA_BYE = "Okay, Mom. Take care."
+ALEXA_ERROR = ("I'm sorry, something went wrong on my end. "
+               "Please try again, or wait for Angel's phone call.")
+
+
+def _alexa_say(text, end=True, reprompt=None):
+    """Build a valid Alexa response envelope."""
+    resp = {"outputSpeech": {"type": "PlainText", "text": text}, "shouldEndSession": end}
+    if reprompt:
+        resp["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt}}
+    return {"version": "1.0", "response": resp}
+
+
+def _alexa_app_id(body):
+    for keys in (("context", "System", "application", "applicationId"),
+                 ("session", "application", "applicationId")):
+        cur = body
+        try:
+            for k in keys:
+                cur = cur[k]
+            return cur
+        except (KeyError, TypeError):
+            continue
+    return None
+
+
+def handle_alexa_skill(body):
+    """Parse an Alexa request and return an Alexa response dict. OkayIntent / NeedDarceeIntent
+    map to scheduler.handle_alexa_wellness (same reconcile + Telegram as the token route)."""
+    req = (body or {}).get("request") or {}
+    rtype = req.get("type")
+    if rtype == "LaunchRequest":
+        return _alexa_say(ALEXA_LAUNCH, end=False, reprompt=ALEXA_HELP)
+    if rtype == "SessionEndedRequest":
+        return _alexa_say("", end=True)
+    if rtype == "IntentRequest":
+        name = ((req.get("intent") or {}).get("name")) or ""
+        if name == "OkayIntent":
+            out = scheduler.handle_alexa_wellness("okay")
+            return _alexa_say(ALEXA_OKAY if out.get("ok") else ALEXA_ERROR)
+        if name == "NeedDarceeIntent":
+            out = scheduler.handle_alexa_wellness("needs_darcee")
+            return _alexa_say(ALEXA_NEEDS if out.get("ok") else ALEXA_ERROR)
+        if name in ("AMAZON.CancelIntent", "AMAZON.StopIntent"):
+            return _alexa_say(ALEXA_BYE)
+        # Help / NavigateHome / anything unrecognized → re-prompt, keep listening.
+        return _alexa_say(ALEXA_HELP, end=False, reprompt=ALEXA_HELP)
+    return _alexa_say(ALEXA_BYE)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet; PM2 captures stdout
         pass
@@ -193,6 +251,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"ok": False, "error": "unauthorized"})
             out = scheduler.handle_alexa_wellness(body.get("intent"))
             return self._send(200 if out.get("ok") else 400, out)
+        if path == "/guardian/alexa/skill":
+            # ANGEL-09b: direct Alexa custom-endpoint. Alexa cannot send our shared token,
+            # so the auth boundary is the skill's applicationId (when configured). Always
+            # returns 200 with a valid Alexa envelope so Alexa speaks a real reply.
+            want = settings.alexa_skill_id
+            if want and _alexa_app_id(body) != want:
+                return self._send(403, {"error": "forbidden"})
+            return self._send(200, handle_alexa_skill(body))
         if not self._authed():
             return self._send(401, {"error": "unauthorized"})
         if path == "/guardian/acknowledge":

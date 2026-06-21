@@ -325,6 +325,14 @@ class Settings:
         return env("GUARDIAN_ALEXA_TOKEN", "")
 
     @property
+    def alexa_skill_id(self):
+        # ANGEL-09b (direct endpoint): the Alexa skill's applicationId
+        # (amzn1.ask.skill.xxxx). When set, the /guardian/alexa/skill route ONLY accepts
+        # requests carrying this id — that is the auth boundary for the public endpoint
+        # (Alexa cannot send our shared token). Leave empty only for pre-skill testing.
+        return env("GUARDIAN_ALEXA_SKILL_ID", "")
+
+    @property
     def alexa_enabled(self):
         # Phase-2 grace-window deferral switch. DEFAULT FALSE = phone behaviour unchanged.
         # (The /guardian/alexa/wellness route + reconcile work regardless of this flag.)
