@@ -267,6 +267,17 @@ def acknowledge_checkin(checkin_id, by="darcee"):
         return dict(r) if r else None
 
 
+def latest_trash_answer():
+    """Most recent check-in that actually collected a trash answer (newest first), or None."""
+    with _LOCK, _conn() as c:
+        r = c.execute(
+            "SELECT * FROM guardian_checkins "
+            "WHERE trash_result IS NOT NULL AND trash_result != '' "
+            "ORDER BY scheduled_time DESC LIMIT 1"
+        ).fetchone()
+        return dict(r) if r else None
+
+
 def acknowledge_trash_checkin(checkin_id, by="sister"):
     """Mark a trash-day answer as received/acknowledged. Returns the updated row (or None)."""
     with _LOCK, _conn() as c:

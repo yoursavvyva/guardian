@@ -166,6 +166,63 @@ def acknowledge_trash(checkin_id, by="sister", by_chat=None):
     return ci, True
 
 
+_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _next_trash_ask(now=None):
+    """Next datetime the trash question will ride along (configured day + time), >= now."""
+    now = now or _now()
+    try:
+        target_dow = _DAYS.index(settings.trash_day.strip().lower())
+        hh, mm = (int(x) for x in settings.trash_time.strip().split(":"))
+    except (ValueError, IndexError):
+        return None
+    cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    delta = (target_dow - cand.weekday()) % 7
+    cand = cand + timedelta(days=delta)
+    if cand <= now:
+        cand = cand + timedelta(days=7)
+    return cand
+
+
+def trash_status(now=None):
+    """Trash-day rollup for the dashboard: the latest answer, which pickup it's for,
+    whether it's still current, and when Mom will next be asked."""
+    if not settings.trash_enabled:
+        return {"enabled": False}
+    now = now or _now()
+    ci = storage.latest_trash_answer()
+    out = {
+        "enabled": True,
+        "answer": None,            # "yes" | "no" | raw digit | None
+        "collected_at": None,      # ISO time of the check-in that collected it
+        "pickup_day": None,        # e.g. "Tuesday"
+        "pickup_date": None,       # ISO date of that pickup
+        "acknowledged": False,
+        "acknowledged_by": None,
+        "current": False,          # True while that pickup is still today/upcoming
+        "next_ask_at": None,       # when the trash question next rides along
+    }
+    nxt = _next_trash_ask(now)
+    out["next_ask_at"] = nxt.isoformat() if nxt else None
+    if ci and ci.get("trash_result"):
+        try:
+            sched = datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz())
+            pickup = sched + timedelta(days=1)
+        except (ValueError, TypeError):
+            pickup = None
+        out["answer"] = ci["trash_result"]
+        out["collected_at"] = ci["scheduled_time"]
+        out["acknowledged"] = bool(ci.get("trash_acknowledged"))
+        out["acknowledged_by"] = ci.get("trash_acknowledged_by")
+        if pickup:
+            out["pickup_day"] = pickup.strftime("%A")
+            out["pickup_date"] = pickup.date().isoformat()
+            # The answer is "current" until the end of the pickup day it refers to.
+            out["current"] = pickup.date() >= now.date()
+    return out
+
+
 # ---- attempt execution ----
 def _run_attempt(checkin):
     attempt_number = (checkin.get("attempt_count") or 0) + 1

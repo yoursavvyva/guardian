@@ -89,6 +89,8 @@ def status():
         "last_callback_outcome": storage.get_meta("last_callback_outcome"),
         # ANGEL-10: whether today's remaining scheduled checks are paused.
         "paused_today": scheduler.is_paused_today(),
+        # ANGEL-12: Monday trash-day answer (does the trash go out tomorrow?).
+        "trash": scheduler.trash_status(),
     }
 
 
