@@ -7,7 +7,13 @@ where Mom has no keypad in front of her. Not enabled for Mom; awaiting Darcee's
 supervised ext-39510 sign-off before activation._
 
 > ## BUILD STATUS (2026-06-23)
-> **Implemented, tests green, deployed behind `GUARDIAN_VOICE_FALLBACK_ENABLED=false`.**
+> **LIVE for Mom as of 2026-06-23** after full Darcee-only ext-39510 validation
+> (10 calls, inbound + outbound, all green). Enabled: Guardian
+> `GUARDIAN_VOICE_FALLBACK_ENABLED=true` (outbound) + voice-app
+> `VOICE_FALLBACK_ENABLED=true` (inbound). Validated on speakerphone (far-field
+> proxy for the Echo); literal Echo-Dot path not separately tested but degrades
+> safely. Live hardening added: force-finalize capture, transcript accumulation,
+> name canonicalization + "call me" phrase, early-press capture + BARGE-IN.
 >
 > **Feature flags (default OFF — production behavior unchanged until flipped):**
 > - **Outbound** wellness + trash rider: Guardian `GUARDIAN_VOICE_FALLBACK_ENABLED=true`
