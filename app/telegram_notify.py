@@ -49,7 +49,30 @@ def send(text, reply_markup=None, chat_id=None):
         urllib.request.urlopen(req, timeout=10)
         _status["last_ok"] = datetime.now(timezone.utc).isoformat()
         _status["last_error"] = None
+        _mirror_to_pmc(text)   # additive Echo Show feed mirror; Telegram unchanged
         return True, "sent"
     except Exception as e:
         _status["last_error"] = str(e)[:160]
         return False, str(e)[:160]
+
+
+def _mirror_to_pmc(text):
+    """Mirror an Angel notification into PMC's Notification Router (Echo Show
+    Integration · Phase 01). Fire-and-forget: never blocks, never raises, never
+    affects the Telegram send above. destinations=['dashboard'] only — no second
+    Telegram message, just a stored copy for the future Echo Show 8 dashboard.
+    Title = first line of the message for a tidier dashboard card."""
+    import os
+    try:
+        first = (text or "").strip().splitlines()[0][:120] if text else ""
+        payload = json.dumps({
+            "token": os.environ.get("PMC_NOTIFY_TOKEN", "pmc-notify-2026"),
+            "source": "Angel", "title": first, "message": text or "",
+            "priority": "normal", "destinations": ["dashboard"],
+        }).encode()
+        req = urllib.request.Request(
+            os.environ.get("PMC_NOTIFY_URL", "http://127.0.0.1:8095/api/notifications"),
+            data=payload, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=4)
+    except Exception:
+        pass
