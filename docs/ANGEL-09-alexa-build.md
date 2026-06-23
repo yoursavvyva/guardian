@@ -92,3 +92,17 @@ and OFF by default**:
 
 ## Unchanged
 Phone dialing ladder, scheduled-check timing, Max/Judy, and the trash/call-back flows.
+
+## Validation notes
+- **2026-06-23 — Test on real Echo devices, not the Alexa mobile app.** Testing
+  "Alexa, tell Guardian Angel I'm okay" from the **iPad Alexa app** produced different
+  invocation behavior (it sometimes routed to Communications/calling) than testing from
+  **Mom's physical Echo Show 11 + Echo Dot**, where the skill, routines, Alexa-first /
+  phone-fallback, Voice ID, and the noon + 8 PM check-ins all worked normally. The app's
+  cloud/preview invocation path is **not a faithful proxy** for on-device routing — future
+  Alexa validation should prioritize real-device testing. (Pilot in observation mode as of
+  this date; no skill/model/config changes made.)
+- Open follow-up: a **7-day real-world review** (set 2026-06-23, review on/after 2026-06-30)
+  tracked in PMC → Guardian Story → Launch — checking for any failed Guardian Angel
+  invocations, any real-device misroutes of "tell Guardian Angel I'm okay", Voice ID
+  reliability, and whether Alexa-first kept outperforming phone-first.
