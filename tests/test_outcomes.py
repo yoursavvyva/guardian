@@ -81,6 +81,35 @@ def test_provider_payload_has_confirm_ack():
     assert ack.get("2") == "Thank you, Mom. I'll let Darcee know you'd like a call. Talk to you later.", ack
 
 
+# ---- ANGEL-13: voice fallback payload + flag gating + unchanged read-back ----
+def test_provider_voice_fallback_payload_gated_by_flag():
+    import os
+    # OFF by default: no voice fields, DTMF wording intact.
+    captured = {}
+    _mock_voiceapp({"state": "completed", "answeredAt": "x", "confirmed": True, "confirmDigit": "1"}, captured)
+    cp.ThreeCXProvider().place_call("test", "39510")
+    off = captured["body"]
+    assert "voiceFallback" not in off, "voice must be off by default"
+    assert "say" not in off["message"].lower() or "press" in off["message"].lower()
+
+    # ON: voiceFallback set, prompt gains the spoken option, read-back unchanged.
+    os.environ["GUARDIAN_VOICE_FALLBACK_ENABLED"] = "true"
+    try:
+        cap2 = {}
+        _mock_voiceapp({"state": "completed", "answeredAt": "x", "confirmed": True, "confirmDigit": "1"}, cap2)
+        res = cp.ThreeCXProvider().place_call("test", "39510")
+        on = cap2["body"]
+        assert on.get("voiceFallback") is True, on.get("voiceFallback")
+        assert "say" in on["message"].lower(), on["message"]
+        assert "say" in on["confirmReprompt"].lower(), on["confirmReprompt"]
+        # DTMF semantics unchanged: a confirmDigit==1 read-back is still confirmed_ok.
+        assert res.status == "confirmed_ok", res.status
+        # acceptDigits and confirmDigit untouched.
+        assert on["acceptDigits"] == ["1", "2"] and on["confirmDigit"] == "1"
+    finally:
+        del os.environ["GUARDIAN_VOICE_FALLBACK_ENABLED"]
+
+
 # ---- 2. mock provider returns all five states ----
 def test_mock_provider_states():
     for want, expected in [("confirmed_ok", "confirmed_ok"),

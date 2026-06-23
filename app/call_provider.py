@@ -89,9 +89,16 @@ class ThreeCXProvider(CallProvider):
         # mode=announce + confirm collects a DTMF press; acceptDigits=[1,2] ends the
         # wait early on either key. The voice-app reports the pressed key back as
         # "confirmDigit" on GET /api/call/:id (and "confirmed" if it equals okay_digit).
+        call_msg = message or settings.call_message
+        reprompt_msg = settings.call_reprompt
+        # ANGEL-13: when voice is enabled, tell Mom she may speak (additive wording;
+        # the DTMF instructions stay intact). DTMF remains primary.
+        if settings.voice_fallback_enabled:
+            call_msg = (call_msg + " " + settings.voice_menu_suffix).strip()
+            reprompt_msg = (reprompt_msg + " " + settings.voice_reprompt_suffix).strip()
         payload = {
             "to": str(target_value),
-            "message": message or settings.call_message,
+            "message": call_msg,
             "mode": "announce",
             "device": settings.angel_device,
             "timeoutSeconds": settings.ring_timeout,
@@ -99,24 +106,56 @@ class ThreeCXProvider(CallProvider):
             "confirmDigit": settings.okay_digit,        # "okay" key -> confirmed=true
             "acceptDigits": [settings.okay_digit, settings.needs_call_digit],
             "confirmWindow1Ms": settings.confirm_window1_ms,  # 15s before the re-prompt
-            "confirmReprompt": settings.call_reprompt,  # spoken if no key in the first window
+            "confirmReprompt": reprompt_msg,            # spoken if no key in the first window
             # Audible acknowledgment spoken for the pressed key before hangup.
             "confirmAck": {
                 settings.okay_digit: settings.ack_okay,
                 settings.needs_call_digit: settings.ack_needs_call,
             },
         }
+        # ANGEL-13: enable the voice path on the voice-app for this call. Speech maps
+        # to the SAME digit, so the read-back below is unchanged. Phrase overrides are
+        # optional — when empty, the voice-app uses its vetted built-in lists.
+        if settings.voice_fallback_enabled:
+            payload["voiceFallback"] = True
+            okay_ph = settings.voice_okay_phrases
+            needs_ph = settings.voice_needs_phrases
+            # Override the full phrase set only if BOTH branches are configured;
+            # otherwise the voice-app uses its vetted built-in lists for both.
+            if okay_ph and needs_ph:
+                payload["voiceGroups"] = [
+                    {"digit": settings.okay_digit, "phrases": okay_ph},
+                    {"digit": settings.needs_call_digit, "phrases": needs_ph},
+                ]
         # Optional Monday trash-day rider: a second DTMF question asked in the same call.
         # second_question = {"message","accept_digits","yes_digit","reprompt","ack"}.
         if second_question:
-            payload["secondQuestion"] = {
-                "message": second_question["message"],
+            sq_msg = second_question["message"]
+            if settings.voice_fallback_enabled:
+                sq_msg_suffix = settings.voice_trash_suffix
+                if sq_msg_suffix:
+                    sq_msg = (sq_msg + " " + sq_msg_suffix).strip()
+            sq = {
+                "message": sq_msg,
                 "acceptDigits": second_question["accept_digits"],
                 "yesDigit": second_question["yes_digit"],
                 "window1Ms": settings.confirm_window1_ms,
                 "reprompt": second_question.get("reprompt"),
                 "confirmAck": second_question.get("ack"),
             }
+            # ANGEL-13: yes/no voice for the trash rider (DTMF primary). Phrase
+            # overrides only if BOTH configured; else voice-app uses its built-ins.
+            if settings.voice_fallback_enabled:
+                yes_ph = settings.voice_trash_yes_phrases
+                no_ph = settings.voice_trash_no_phrases
+                accept = second_question["accept_digits"]
+                no_digit = accept[1] if len(accept) > 1 else "2"
+                if yes_ph and no_ph:
+                    sq["voiceGroups"] = [
+                        {"digit": second_question["yes_digit"], "phrases": yes_ph},
+                        {"digit": no_digit, "phrases": no_ph},
+                    ]
+            payload["secondQuestion"] = sq
         try:
             req = urllib.request.Request(base + "/api/outbound-call",
                                          data=json.dumps(payload).encode(),

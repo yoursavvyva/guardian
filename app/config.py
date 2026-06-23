@@ -231,6 +231,49 @@ class Settings:
         # Press this = "have Darcee call me" -> needs_darcee.
         return env("GUARDIAN_NEEDS_CALL_DIGIT", "2")
 
+    # ---- ANGEL-13: voice fallback (say "I'm okay" / "I need Darcee") ----
+    # Additive to DTMF; DTMF always wins. Default OFF — flip on only after testing.
+    @property
+    def voice_fallback_enabled(self):
+        return env("GUARDIAN_VOICE_FALLBACK_ENABLED", "false").lower() == "true"
+
+    @staticmethod
+    def _csv(raw):
+        return [s.strip() for s in str(raw or "").split(",") if s.strip()]
+
+    @property
+    def voice_okay_phrases(self):
+        # Optional override; empty -> voice-app uses its vetted built-in list.
+        return self._csv(env("GUARDIAN_VOICE_OKAY_PHRASES", ""))
+
+    @property
+    def voice_needs_phrases(self):
+        return self._csv(env("GUARDIAN_VOICE_NEEDS_PHRASES", ""))
+
+    @property
+    def voice_trash_yes_phrases(self):
+        return self._csv(env("GUARDIAN_VOICE_TRASH_YES_PHRASES", ""))
+
+    @property
+    def voice_trash_no_phrases(self):
+        return self._csv(env("GUARDIAN_VOICE_TRASH_NO_PHRASES", ""))
+
+    @property
+    def voice_menu_suffix(self):
+        # Appended to the wellness prompt when voice is enabled, so Mom is told
+        # she can speak. Keeps the DTMF wording intact and just adds the option.
+        return env("GUARDIAN_VOICE_MENU_SUFFIX",
+                   "Or, you can just say: I'm okay. Or say: I need Darcee.")
+
+    @property
+    def voice_reprompt_suffix(self):
+        return env("GUARDIAN_VOICE_REPROMPT_SUFFIX",
+                   "You can press a button, or just say: I'm okay, or: I need Darcee.")
+
+    @property
+    def voice_trash_suffix(self):
+        return env("GUARDIAN_VOICE_TRASH_SUFFIX", "You can also just say yes or no.")
+
     @property
     def ring_timeout(self):
         try:

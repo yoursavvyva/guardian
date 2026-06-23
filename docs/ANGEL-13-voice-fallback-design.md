@@ -1,8 +1,30 @@
-# ANGEL-13 — Voice-Response Fallback for Phone Wellness Calls (DESIGN ONLY — not built)
+# ANGEL-13 — Voice-Response Fallback for Phone Wellness Calls
 
-_Design report, 2026-06-23. No code written, nothing deployed, no live calls.
-DTMF stays the primary and authoritative input; this only **adds** a spoken path
-for the cases where Mom has no keypad in front of her._
+_Design report, 2026-06-23. **BUILD APPROVED + IMPLEMENTED 2026-06-23** — built,
+unit-tested, and deployed **behind a default-OFF feature flag**. DTMF stays the
+primary and authoritative input; this only **adds** a spoken path for the cases
+where Mom has no keypad in front of her. Not enabled for Mom; awaiting Darcee's
+supervised ext-39510 sign-off before activation._
+
+> ## BUILD STATUS (2026-06-23)
+> **Implemented, tests green, deployed behind `GUARDIAN_VOICE_FALLBACK_ENABLED=false`.**
+>
+> **Feature flags (default OFF — production behavior unchanged until flipped):**
+> - **Outbound** wellness + trash rider: Guardian `GUARDIAN_VOICE_FALLBACK_ENABLED=true`
+>   (Guardian then sends `voiceFallback` to the voice-app per call).
+> - **Inbound** call-back (ext 39515): voice-app `VOICE_FALLBACK_ENABLED=true` in
+>   `~/.claude-phone/.env` (inbound originates at the voice-app).
+> - STT: voice-app `STT_*` (recommend Groq `whisper-large-v3`).
+>
+> **Files built:** voice-app `lib/speech-match.js` (new), `lib/voice-capture.js` (new),
+> `lib/confirm.js` (+speech hook), `lib/outbound-routes.js` + `lib/inbound-wellness.js`
+> (+capture wiring), `test/speech-match.test.js` (new), `test/confirm.test.js` (+5).
+> Guardian `app/config.py` (+flags), `app/call_provider.py` (+payload), `.env.example`.
+>
+> **Tests:** speech-match **51/51**, confirm **12/12** (incl. DTMF-wins + ambiguous-reject),
+> Guardian **46/46** (45 prior + 1 voice-payload). No regression.
+>
+> **Enablement instructions, deploy plan, and rollback plan are in §10–§11 below.**
 
 ## Motivation (the real pilot observation)
 
@@ -263,5 +285,49 @@ flag is on, and that the resolved digit is read back unchanged.
 5. Guardian `call_provider`/`config`/wording + `.env.example`; Guardian suite green.
 6. Supervised ext-39510 matrix (§7) → then one supervised Mom check.
 
-_End of design. Nothing in this document has been implemented. DTMF remains primary;
-Alexa-first, the 15-minute grace window, Telegram controls, and Max/Judy are untouched._
+---
+
+## 10. Deployment, enablement & rollback (as built)
+
+### Deploy (behind flag — already done 2026-06-23, flags OFF)
+1. **voice-app** (new lib files → image rebuild):
+   `cd ~/.claude-phone && docker compose build voice-app && docker compose up -d voice-app`
+   (recreates only voice-app; Max/Judy/Angel re-register in a few seconds; nothing
+   else touched). New code is inert unless a call carries `voiceFallback` (outbound)
+   or `VOICE_FALLBACK_ENABLED=true` is set (inbound).
+2. **Guardian** (Python-only): `pm2 restart guardian-assistant --update-env`.
+3. Confirm health: voice-app registrations up; Guardian `/guardian/health` OK; a
+   normal DTMF check still behaves exactly as before.
+
+### Enablement (DO NOT do until Darcee signs off after ext-39510 testing)
+- **STT key** (voice-app `~/.claude-phone/.env`): `STT_API_KEY=<groq key>`,
+  `STT_BASE_URL=https://api.groq.com/openai/v1`, `STT_MODEL=whisper-large-v3`.
+- **Outbound** (Guardian `~/projects/guardian/.env`): `GUARDIAN_VOICE_FALLBACK_ENABLED=true`
+  → `pm2 restart guardian-assistant --update-env`.
+- **Inbound** (voice-app `~/.claude-phone/.env`): `VOICE_FALLBACK_ENABLED=true`
+  → `docker compose up -d voice-app`.
+- Test on **ext 39510** first (full matrix §7), THEN one supervised Mom check.
+
+### Rollback
+- **Instant (no redeploy):** set `GUARDIAN_VOICE_FALLBACK_ENABLED=false` (+ restart
+  guardian) and/or `VOICE_FALLBACK_ENABLED=false` (+ `docker compose up -d voice-app`).
+  Behavior returns to exact pre-ANGEL-13 DTMF-only — the flag is the kill switch.
+- **Full revert:** `git revert` the voice-app + guardian commits, rebuild voice-app,
+  restart guardian. (Not needed for a behavioral rollback — the flag suffices.)
+
+## 11. Production rollout sequence (recommended)
+
+1. ✅ Build + unit tests + deploy behind flag (done; flags OFF).
+2. Add the Groq STT key to the voice-app env (no behavior change yet).
+3. Enable **inbound** on the voice-app; call **ext 39515 from 39510** and run the
+   answer-mode matrix (handset / speaker / Bluetooth / DTMF-while-speaking).
+4. Enable **outbound** in Guardian; use `POST /guardian/test/call {to:"39510"}` and
+   repeat the matrix; verify DTMF still wins and ambiguous speech falls through.
+5. Watch one or two of **Darcee's own** scheduled-style test checks end-to-end.
+6. **Only then**, with Darcee present and the Telegram backstop ready, allow it on
+   one of Mom's real checks. Keep Alexa-first + the phone ladder fully intact.
+7. If anything feels off at any step → flip the flag OFF (instant rollback).
+
+_DTMF remains primary; Alexa-first, the 15-minute grace window, Telegram controls,
+and Max/Judy are untouched. Built + deployed behind a default-OFF flag; not enabled
+for Mom — awaiting Darcee's sign-off._
