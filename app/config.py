@@ -262,13 +262,14 @@ class Settings:
     def voice_menu_suffix(self):
         # Appended to the wellness prompt when voice is enabled, so Mom is told
         # she can speak. Keeps the DTMF wording intact and just adds the option.
+        # "call me" is name-free => most reliable for speech recognition.
         return env("GUARDIAN_VOICE_MENU_SUFFIX",
-                   "Or, you can just say: I'm okay. Or say: I need Darcee.")
+                   "Or, you can just say: I'm okay. Or, to have me call Darcee, say: call me.")
 
     @property
     def voice_reprompt_suffix(self):
         return env("GUARDIAN_VOICE_REPROMPT_SUFFIX",
-                   "You can press a button, or just say: I'm okay, or: I need Darcee.")
+                   "You can press a button, or just say: I'm okay, or say: call me.")
 
     @property
     def voice_trash_suffix(self):
