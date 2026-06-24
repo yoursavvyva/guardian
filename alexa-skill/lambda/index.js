@@ -6,23 +6,24 @@ const GUARDIAN_URL = process.env.GUARDIAN_ALEXA_URL || 'https://angel.darceesell
 const GUARDIAN_TOKEN = process.env.GUARDIAN_ALEXA_TOKEN || 'c377cb2518f5bc6e6b63d073cf45faccf7a740d58a3e7654';
 
 const LAUNCH_LINE = [
-  "Hi Mom, it's Angel.",
+  "Hi Mom, it's Angel, just checking in.",
   "If you're okay, say: I'm okay.",
-  "Or, if you'd like Darcee to call you, say: I need Darcee."
+  "Or, if you'd like a call, say: call me."
 ].join(' ');
 
 const OKAY_LINE = [
-  "Wonderful.",
-  "I've let Darcee know you're doing okay.",
-  "Have a lovely day, Mom."
+  "Thank you, Mom.",
+  "I'm glad you're okay.",
+  "Have a wonderful day."
 ].join(' ');
 
 const NEEDS_LINE = [
-  "Okay, I've let Darcee know you'd like a call.",
-  "She'll reach out soon."
+  "Thank you, Mom.",
+  "I'll let Darcee know you'd like a call.",
+  "Talk to you later."
 ].join(' ');
 
-const HELP_LINE = "Say: I'm okay. Or say: I need Darcee.";
+const HELP_LINE = "Say: I'm okay. Or say: call me.";
 
 const BYE_LINE = "Okay, Mom. Take care.";
 

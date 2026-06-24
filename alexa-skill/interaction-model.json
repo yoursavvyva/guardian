@@ -24,6 +24,11 @@
           "name": "NeedDarceeIntent",
           "slots": [],
           "samples": [
+            "call me",
+            "call me please",
+            "please call me",
+            "I'd like a call",
+            "I need a call",
             "I need Darcee",
             "I need my daughter",
             "have Darcee call me",
