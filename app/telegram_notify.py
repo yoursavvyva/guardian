@@ -56,19 +56,33 @@ def send(text, reply_markup=None, chat_id=None):
         return False, str(e)[:160]
 
 
+# Echo Show speaks ONLY the terminal wellness OUTCOMES — not the per-attempt
+# "calling…/retrying…/starting…" play-by-play. Telegram still gets EVERYTHING
+# (this runs after the Telegram send). Classify by Angel's leading status emoji:
+#   💚 Mom confirmed okay                         -> normal
+#   🟡 Mom wants a call (#2 / "call me")          -> important
+#   🚨 escalation: all attempts, no confirmation  -> urgent (Darcee must follow up)
+# Anything else (📞 calling, ⚠️ retrying, 🛡️ starting, 🧪 mock, ☎️ manual,
+# ✅ ack, 🔔 incomplete call-back) is Telegram-only and never reaches the Echo.
+_ECHO_PRIORITY = [("💚", "normal"), ("🟡", "important"), ("🚨", "urgent")]
+
+
 def _mirror_to_pmc(text):
-    """Mirror an Angel notification into PMC's Notification Router (Echo Show
-    Integration · Phase 01). Fire-and-forget: never blocks, never raises, never
-    affects the Telegram send above. destinations=['dashboard'] only — no second
-    Telegram message, just a stored copy for the future Echo Show 8 dashboard.
-    Title = first line of the message for a tidier dashboard card."""
+    """Mirror only terminal Angel OUTCOMES into PMC's Notification Router so the
+    Echo Show speaks just the events Darcee cares about. Fire-and-forget: never
+    blocks, never raises, never affects the Telegram send above. Progress pings
+    return early (Telegram-only). destinations=['dashboard']."""
     import os
+    t = (text or "").strip()
+    priority = next((p for emo, p in _ECHO_PRIORITY if t.startswith(emo)), None)
+    if priority is None:
+        return  # progress/noise — Telegram only, no Echo Show announcement
     try:
-        first = (text or "").strip().splitlines()[0][:120] if text else ""
+        first = t.splitlines()[0][:120]
         payload = json.dumps({
             "token": os.environ.get("PMC_NOTIFY_TOKEN", "pmc-notify-2026"),
-            "source": "Angel", "title": first, "message": text or "",
-            "priority": "normal", "destinations": ["dashboard"],
+            "source": "Angel", "title": first, "message": t,
+            "priority": priority, "destinations": ["dashboard"],
         }).encode()
         req = urllib.request.Request(
             os.environ.get("PMC_NOTIFY_URL", "http://127.0.0.1:8095/api/notifications"),
