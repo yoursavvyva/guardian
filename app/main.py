@@ -133,11 +133,11 @@ def config_overview():
 # ---- ANGEL-09b: direct Alexa custom-endpoint (replaces the Alexa-hosted Lambda) ----
 # Guardian answers Alexa itself — no second network hop / Lambda cold-start, so no timeout.
 # Spoken lines mirror the old lambda; Mom hears a clear confirmation instead of an error.
-ALEXA_LAUNCH = ("Hi Mom, it's Angel. If you're okay, say: I'm okay. "
-                "Or, if you'd like Darcee to call you, say: I need Darcee.")
-ALEXA_OKAY = "Wonderful. I've let Darcee know you're doing okay. Have a lovely day, Mom."
-ALEXA_NEEDS = "Okay, I've let Darcee know you'd like a call. She'll reach out soon."
-ALEXA_HELP = "Say: I'm okay. Or say: I need Darcee."
+ALEXA_LAUNCH = ("Hi Mom, it's Angel, just checking in. If you're okay, say: I'm okay. "
+                "Or, if you'd like a call, say: call me.")
+ALEXA_OKAY = "Thank you, Mom. I'm glad you're okay. Have a wonderful day."
+ALEXA_NEEDS = "Thank you, Mom. I'll let Darcee know you'd like a call. Talk to you later."
+ALEXA_HELP = "Say: I'm okay. Or say: call me."
 ALEXA_BYE = "Okay, Mom. Take care."
 ALEXA_ERROR = ("I'm sorry, something went wrong on my end. "
                "Please try again, or wait for Angel's phone call.")
