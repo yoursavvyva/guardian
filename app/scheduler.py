@@ -925,21 +925,37 @@ def _process_ack_reminders(now=None):
         storage.mark_reminded(ci["id"])
 
 
+def _trash_escalate_deadline(ci):
+    """The datetime by which the sister must confirm a YES before Darcee is told: the day
+    BEFORE the pickup at trash_escalate_deadline_time (e.g. Monday 12:00 for a Tuesday pickup)."""
+    t = settings.trash_escalate_deadline_time
+    if not t:
+        return None
+    try:
+        hh, mm = (int(x) for x in t.split(":"))
+        sched = datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz())
+        pickup = _pickup_after(sched)
+        return (pickup - timedelta(days=1)).replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
 def _process_trash_ack_reminders(now=None):
-    """ANGEL-15: re-nudge the SISTER (trash_extra_chat_ids ONLY — never Darcee) every
-    trash_ack_reminder_minutes for any trash answer she hasn't tapped 'Got it' on, until she
-    acks or the pickup day passes. Quiet overnight (reuses the wellness quiet window)."""
+    """ANGEL-15: chase a YES trash answer until the sister acks. Re-nudges the SISTER
+    (trash_extra_chat_ids ONLY — never Darcee) every trash_ack_reminder_minutes (quiet
+    overnight); and if she STILL hasn't confirmed by the deadline (day before pickup at
+    trash_escalate_deadline_time, e.g. Monday 12:00 for a Tuesday pickup), escalates to Darcee
+    ONCE. Stops at the sister's ack or once the pickup day has passed. A "no" is never chased."""
     now = now or _now()
-    if settings.trash_ack_reminder_minutes <= 0 or not settings.trash_extra_chat_ids:
-        return
-    if _in_quiet_hours(now):
+    if not settings.trash_extra_chat_ids:
         return
     from datetime import timezone
-    interval = timedelta(minutes=settings.trash_ack_reminder_minutes)
     now_utc = datetime.now(timezone.utc)
+    quiet = _in_quiet_hours(now)
+    nudge_interval = settings.trash_ack_reminder_minutes
     for ci in storage.unacked_trash():
         if ci.get("trash_result") != "yes":
-            continue  # only chase a "yes" — a "no" needs no action, so no re-nudges
+            continue  # only chase a "yes" — a "no" needs no action
         # stop chasing once the pickup day has passed (a stale answer needs no ack)
         try:
             pickup = _pickup_after(datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz()))
@@ -947,37 +963,34 @@ def _process_trash_ack_reminders(now=None):
                 continue
         except (ValueError, TypeError, KeyError):
             pass
-        base = ci.get("last_reminder_at") or ci.get("created_at")
-        try:
-            since = now_utc - datetime.fromisoformat(base)
-        except (ValueError, TypeError):
-            since = interval  # malformed → treat as due
-        if since < interval:
-            continue
         pickup_name = _trash_tomorrow(ci)
-        msg = ("🗑️ Reminder — please confirm\n\n"
-               f"Mom said the trash NEEDS to go out for {pickup_name}.\n"
-               "Tap below so Darcee knows you've got it.")
-        btn = _trash_ack_button(ci["id"])
-        for cid in settings.trash_extra_chat_ids:
-            telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
-        storage.mark_reminded(ci["id"])
-        # Sister keeps ignoring a trash-goes-out answer → escalate to Darcee ONCE so she can
-        # make sure it actually goes out. (escalation_sent doubles as the "Darcee is involved"
-        # flag — already set when Mom didn't answer and Darcee set the answer herself.)
-        thresh = settings.trash_escalate_after_nudges
-        fresh = storage.get_checkin(ci["id"])
-        if (thresh > 0 and fresh and (fresh.get("reminder_count") or 0) >= thresh
-                and not fresh.get("escalation_sent")):
-            storage.update_checkin(ci["id"], escalation_sent=1)
-            storage.add_audit("trash_escalate_darcee", "guardian", None, ci["id"],
-                              f"reminders={fresh.get('reminder_count')}")
-            telegram_notify.send(
-                "🗑️ Heads up — your sister hasn't confirmed the trash\n\n"
-                f"Mom said the trash NEEDS to go out for {pickup_name}, but your sister hasn't "
-                f"tapped Got it after {fresh.get('reminder_count')} reminders. You may want to make "
-                "sure it goes out. Tap below once it's handled.",
-                reply_markup=_trash_ack_button(ci["id"]))
+        # (1) Deadline escalation to Darcee — independent of the nudge cadence, runs every tick.
+        if not ci.get("escalation_sent"):
+            deadline = _trash_escalate_deadline(ci)
+            if deadline and now >= deadline:
+                storage.update_checkin(ci["id"], escalation_sent=1)
+                storage.add_audit("trash_escalate_darcee", "guardian", None, ci["id"], "deadline")
+                telegram_notify.send(
+                    "🗑️ Heads up — your sister hasn't confirmed the trash\n\n"
+                    f"Mom said the trash NEEDS to go out for {pickup_name}, and your sister still "
+                    f"hasn't tapped Got it as of {_label(deadline.isoformat())} (the day before "
+                    "pickup). You may want to make sure it goes out. Tap below once it's handled.",
+                    reply_markup=_trash_ack_button(ci["id"]))
+        # (2) Re-nudge the sister on the interval (not overnight).
+        if nudge_interval > 0 and not quiet:
+            base = ci.get("last_reminder_at") or ci.get("created_at")
+            try:
+                due = (now_utc - datetime.fromisoformat(base)) >= timedelta(minutes=nudge_interval)
+            except (ValueError, TypeError):
+                due = True
+            if due:
+                msg = ("🗑️ Reminder — please confirm\n\n"
+                       f"Mom said the trash NEEDS to go out for {pickup_name}.\n"
+                       "Tap below so Darcee knows you've got it.")
+                btn = _trash_ack_button(ci["id"])
+                for cid in settings.trash_extra_chat_ids:
+                    telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
+                storage.mark_reminded(ci["id"])
 
 
 # ---- tick ----

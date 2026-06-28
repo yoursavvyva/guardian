@@ -429,13 +429,11 @@ class Settings:
             return 120
 
     @property
-    def trash_escalate_after_nudges(self):
-        # If the sister still hasn't confirmed a YES after this many un-acked re-nudges, escalate
-        # to Darcee ONCE so she can make sure the trash actually goes out. 0 = never escalate.
-        try:
-            return int(env("GUARDIAN_TRASH_ESCALATE_AFTER_NUDGES", "3"))
-        except ValueError:
-            return 3
+    def trash_escalate_deadline_time(self):
+        # Hard deadline: if the sister still hasn't confirmed a YES by this time on the day
+        # BEFORE pickup (e.g. Monday 12:00 for a Tuesday pickup), escalate to Darcee ONCE so she
+        # has time to make sure it goes out. Empty = no deadline escalation.
+        return env("GUARDIAN_TRASH_ESCALATE_DEADLINE_TIME", "12:00").strip()
 
     # ---- ANGEL-09: Alexa wellness channel ----
     @property
