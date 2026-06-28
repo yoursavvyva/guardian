@@ -291,6 +291,18 @@ def acknowledge_trash_checkin(checkin_id, by="sister"):
         return dict(r) if r else None
 
 
+def unacked_trash():
+    """Trash answers (yes/no) recorded but not yet acknowledged (oldest first).
+    Used to re-nudge the sister until she confirms receipt."""
+    with _LOCK, _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM guardian_checkins "
+            "WHERE source='trash' AND trash_result IN ('yes','no') AND COALESCE(trash_acknowledged,0)=0 "
+            "ORDER BY scheduled_time ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def mark_reminded(checkin_id):
     with _LOCK, _conn() as c:
         c.execute(

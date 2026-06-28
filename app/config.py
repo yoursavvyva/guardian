@@ -418,6 +418,15 @@ class Settings:
         except ValueError:
             return 30
 
+    @property
+    def trash_ack_reminder_minutes(self):
+        # Re-nudge the SISTER (trash_extra_chat_ids only — never Darcee) this often until she
+        # taps "Got it" on a trash answer, or the pickup day passes. 0 = no re-nudge. Quiet overnight.
+        try:
+            return int(env("GUARDIAN_TRASH_ACK_REMINDER_MINUTES", "120"))
+        except ValueError:
+            return 120
+
     # ---- ANGEL-09: Alexa wellness channel ----
     @property
     def alexa_token(self):

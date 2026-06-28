@@ -928,6 +928,43 @@ def _process_ack_reminders(now=None):
         storage.mark_reminded(ci["id"])
 
 
+def _process_trash_ack_reminders(now=None):
+    """ANGEL-15: re-nudge the SISTER (trash_extra_chat_ids ONLY — never Darcee) every
+    trash_ack_reminder_minutes for any trash answer she hasn't tapped 'Got it' on, until she
+    acks or the pickup day passes. Quiet overnight (reuses the wellness quiet window)."""
+    now = now or _now()
+    if settings.trash_ack_reminder_minutes <= 0 or not settings.trash_extra_chat_ids:
+        return
+    if _in_quiet_hours(now):
+        return
+    from datetime import timezone
+    interval = timedelta(minutes=settings.trash_ack_reminder_minutes)
+    now_utc = datetime.now(timezone.utc)
+    for ci in storage.unacked_trash():
+        # stop chasing once the pickup day has passed (a stale answer needs no ack)
+        try:
+            pickup = _pickup_after(datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz()))
+            if pickup.date() < now.date():
+                continue
+        except (ValueError, TypeError, KeyError):
+            pass
+        base = ci.get("last_reminder_at") or ci.get("created_at")
+        try:
+            since = now_utc - datetime.fromisoformat(base)
+        except (ValueError, TypeError):
+            since = interval  # malformed → treat as due
+        if since < interval:
+            continue
+        verb = "NEEDS to go out" if ci.get("trash_result") == "yes" else "does NOT need to go out"
+        msg = ("🗑️ Reminder — please confirm you saw this\n\n"
+               f"Mom said the trash {verb} for {_trash_tomorrow(ci)}.\n"
+               "Tap below so Darcee knows you got it.")
+        btn = _trash_ack_button(ci["id"])
+        for cid in settings.trash_extra_chat_ids:
+            telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
+        storage.mark_reminded(ci["id"])
+
+
 # ---- tick ----
 def _tick():
     now = _now()
@@ -986,6 +1023,8 @@ def _tick():
     _tick_trash(now)
     # 4) re-nudge un-acknowledged call-back requests (ANGEL-06)
     _process_ack_reminders(now)
+    # 5) ANGEL-15: re-nudge the sister for un-acknowledged trash answers (sister chat only)
+    _process_trash_ack_reminders(now)
 
 
 def trigger_mock_check(result=None):
