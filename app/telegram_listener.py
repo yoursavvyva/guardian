@@ -128,6 +128,26 @@ def _handle_trash_ack(scheduler, data, cb_id, msg, chat, who):
         _edit(chat, msg["message_id"], (msg.get("text") or "Trash Day") + f"\n\n✅ Acknowledged by {who}.")
 
 
+def _handle_trash_set(scheduler, data, cb_id, msg, chat, who):
+    """Darcee taps Yes/No to record Mom's trash answer (ANGEL-14 follow-up). callback_data:
+    guardian_trash_set:<checkin_id>:<yes|no>."""
+    parts = data.split(":")
+    cid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    answer = parts[2] if len(parts) > 2 else None
+    ci, changed = (None, False)
+    if cid and answer in ("yes", "no"):
+        ci, changed = scheduler.set_trash_answer(cid, answer, by=f"{who} (telegram)", chat=chat)
+    if changed:
+        verb = "goes out" if answer == "yes" else "does NOT go out"
+        _answer(cb_id, f"✅ Recorded: trash {verb}. Your sister has been notified to confirm.", alert=True)
+        if msg.get("message_id"):
+            _edit(chat, msg["message_id"], (msg.get("text") or "Trash") + f"\n\n✅ You answered: {answer.upper()}.")
+    else:
+        already = bool(ci and ci.get("trash_result"))
+        _answer(cb_id, f"Already answered ({ci.get('trash_result','').upper()}). 👍" if already
+                else "Couldn't find that trash question.", alert=True)
+
+
 def _handle_called_mom(scheduler, data, cb_id, msg, chat):
     try:
         cid = int(data.split(":", 1)[1])
@@ -217,6 +237,8 @@ def _handle_callback(cb):
     if not _is_darcee(chat):
         return _answer(cb_id, "Not authorized.")
 
+    if data.startswith("guardian_trash_set:"):
+        return _handle_trash_set(scheduler, data, cb_id, msg, chat, who)
     if data.startswith("guardian_ok:"):
         return _handle_mom_is_ok(scheduler, data, cb_id, msg, chat, who)
     if data.startswith("guardian_ack:"):

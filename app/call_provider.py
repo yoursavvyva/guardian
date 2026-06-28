@@ -27,7 +27,7 @@ class CallResult:
 class CallProvider:
     name = "base"
 
-    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None, primary=None) -> CallResult:
         raise NotImplementedError
 
 
@@ -42,7 +42,7 @@ def set_mock_result(result):
 class MockProvider(CallProvider):
     name = "mock"
 
-    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None, primary=None) -> CallResult:
         valid = ("confirmed_ok", "needs_darcee", "answered_unconfirmed", "missed", "failed")
         result = _mock_override["result"] or settings.mock_result
         if result == "answered":          # legacy alias → a confirmed wellness pass
@@ -52,6 +52,15 @@ class MockProvider(CallProvider):
                                     "answered_unconfirmed", "missed", "failed"])
         if result not in valid:
             result = "confirmed_ok"
+        # ANGEL-14: a primary-override (standalone trash) call returns the raw pressed digit.
+        # Simulate it from mock_second_digit so the standalone flow can be exercised. A
+        # mock "missed"/"failed" stays a no-answer (no digit captured).
+        if primary:
+            if result in ("missed", "failed"):
+                return CallResult(result, provider="mock", extra={})
+            sd = str(settings.mock_second_digit)
+            return CallResult("answered_question" if sd else "answered_unconfirmed",
+                              provider="mock", extra={"primary_digit": sd})
         # Simulate the trash-day answer so the rider can be exercised without a real call.
         extra = {"second_digit": settings.mock_second_digit} if second_question else None
         return CallResult(result, provider="mock", extra=extra)
@@ -78,7 +87,7 @@ class ThreeCXProvider(CallProvider):
     watching the call's answeredAt."""
     name = "3cx"
 
-    def place_call(self, target_type, target_value, message=None, second_question=None) -> CallResult:
+    def place_call(self, target_type, target_value, message=None, second_question=None, primary=None) -> CallResult:
         import json
         import time as _time
         import urllib.request
@@ -89,12 +98,28 @@ class ThreeCXProvider(CallProvider):
         # mode=announce + confirm collects a DTMF press; acceptDigits=[1,2] ends the
         # wait early on either key. The voice-app reports the pressed key back as
         # "confirmDigit" on GET /api/call/:id (and "confirmed" if it equals okay_digit).
+        #
+        # ANGEL-14: a `primary` override turns this into a single custom question (e.g. the
+        # standalone trash yes/no) instead of the wellness menu — same generic voice-app
+        # mechanism, just different message/digits/acks. Wellness calls (primary=None) are
+        # completely unchanged.
         call_msg = message or settings.call_message
         reprompt_msg = settings.call_reprompt
+        p_accept = [settings.okay_digit, settings.needs_call_digit]
+        p_confirm_digit = settings.okay_digit
+        p_ack = {settings.okay_digit: settings.ack_okay, settings.needs_call_digit: settings.ack_needs_call}
+        if primary:
+            call_msg = primary.get("message") or call_msg
+            reprompt_msg = primary.get("reprompt") or reprompt_msg
+            p_accept = primary.get("accept_digits") or p_accept
+            p_confirm_digit = primary.get("confirm_digit") or p_accept[0]
+            p_ack = primary.get("ack") or {}
         # ANGEL-13: when voice is enabled, tell Mom she may speak (additive wording;
-        # the DTMF instructions stay intact). DTMF remains primary.
+        # the DTMF instructions stay intact). DTMF remains primary. The wellness "menu"
+        # suffix is wellness-specific, so it's skipped for a primary-override question.
         if settings.voice_fallback_enabled:
-            call_msg = (call_msg + " " + settings.voice_menu_suffix).strip()
+            if not primary:
+                call_msg = (call_msg + " " + settings.voice_menu_suffix).strip()
             reprompt_msg = (reprompt_msg + " " + settings.voice_reprompt_suffix).strip()
         payload = {
             "to": str(target_value),
@@ -103,30 +128,30 @@ class ThreeCXProvider(CallProvider):
             "device": settings.angel_device,
             "timeoutSeconds": settings.ring_timeout,
             "confirm": settings.confirm_enabled,        # collect a key press
-            "confirmDigit": settings.okay_digit,        # "okay" key -> confirmed=true
-            "acceptDigits": [settings.okay_digit, settings.needs_call_digit],
+            "confirmDigit": p_confirm_digit,
+            "acceptDigits": p_accept,
             "confirmWindow1Ms": settings.confirm_window1_ms,  # 15s before the re-prompt
             "confirmReprompt": reprompt_msg,            # spoken if no key in the first window
-            # Audible acknowledgment spoken for the pressed key before hangup.
-            "confirmAck": {
-                settings.okay_digit: settings.ack_okay,
-                settings.needs_call_digit: settings.ack_needs_call,
-            },
+            "confirmAck": p_ack,                        # audible ack spoken for the pressed key
         }
         # ANGEL-13: enable the voice path on the voice-app for this call. Speech maps
         # to the SAME digit, so the read-back below is unchanged. Phrase overrides are
         # optional — when empty, the voice-app uses its vetted built-in lists.
         if settings.voice_fallback_enabled:
             payload["voiceFallback"] = True
-            okay_ph = settings.voice_okay_phrases
-            needs_ph = settings.voice_needs_phrases
-            # Override the full phrase set only if BOTH branches are configured;
-            # otherwise the voice-app uses its vetted built-in lists for both.
-            if okay_ph and needs_ph:
-                payload["voiceGroups"] = [
-                    {"digit": settings.okay_digit, "phrases": okay_ph},
-                    {"digit": settings.needs_call_digit, "phrases": needs_ph},
-                ]
+            if primary:
+                if primary.get("voice_groups"):
+                    payload["voiceGroups"] = primary["voice_groups"]
+            else:
+                okay_ph = settings.voice_okay_phrases
+                needs_ph = settings.voice_needs_phrases
+                # Override the full phrase set only if BOTH branches are configured;
+                # otherwise the voice-app uses its vetted built-in lists for both.
+                if okay_ph and needs_ph:
+                    payload["voiceGroups"] = [
+                        {"digit": settings.okay_digit, "phrases": okay_ph},
+                        {"digit": settings.needs_call_digit, "phrases": needs_ph},
+                    ]
         # Optional Monday trash-day rider: a second DTMF question asked in the same call.
         # second_question = {"message","accept_digits","yes_digit","reprompt","ack"}.
         if second_question:
@@ -206,6 +231,11 @@ class ThreeCXProvider(CallProvider):
         # ANGEL-05 outcome model — a connected call is NOT "Mom is okay".
         # She must press a menu key: 1 = okay, 2 = have Darcee call. No input = unconfirmed.
         if answered:
+            # ANGEL-14: a primary-override call reports the raw pressed digit; the caller
+            # (the standalone trash runner) maps it to yes/no — no wellness semantics.
+            if primary:
+                return CallResult("answered_question" if digit else "answered_unconfirmed",
+                                  provider="3cx", extra={"primary_digit": digit})
             extra = {"second_digit": second_digit} if second_question else None
             if digit == settings.needs_call_digit:
                 return CallResult("needs_darcee", provider="3cx", extra=extra)

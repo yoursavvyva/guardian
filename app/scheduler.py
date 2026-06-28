@@ -116,11 +116,26 @@ def _trash_question():
 
 
 def _trash_tomorrow(checkin):
+    # Prefer the configured real pickup day (e.g. "Tuesday"); else the next-day fallback.
+    if settings.trash_pickup_day:
+        return settings.trash_pickup_day
     try:
         return (datetime.fromisoformat(checkin["scheduled_time"]).astimezone(_tz())
                 + timedelta(days=1)).strftime("%A")
     except (ValueError, TypeError):
         return "tomorrow"
+
+
+def _pickup_after(sched):
+    """The pickup datetime for a trash question asked at `sched`: the next occurrence of the
+    configured pickup day on/after the ask date (e.g. asked Sunday → Tuesday), or next-day."""
+    if settings.trash_pickup_day:
+        try:
+            target = _DAYS.index(settings.trash_pickup_day.strip().lower())
+        except ValueError:
+            return sched + timedelta(days=1)
+        return sched + timedelta(days=(target - sched.weekday()) % 7)
+    return sched + timedelta(days=1)
 
 
 def _trash_ack_button(checkin_id):
@@ -166,6 +181,208 @@ def acknowledge_trash(checkin_id, by="sister", by_chat=None):
     return ci, True
 
 
+# ---- ANGEL-14: STANDALONE trash sequence (its own call AFTER wellness completes) ----
+def _today_trash_checkin(now=None):
+    """Today's standalone trash check-in (source='trash'), or None."""
+    now = now or _now()
+    start, end = _today_bounds(now)
+    for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
+        if ci.get("source") == "trash":
+            return ci
+    return None
+
+
+def _trash_anchor_dt(now):
+    """Today at trash_time (the noon wellness slot the trash sequence follows)."""
+    hh, mm = (int(x) for x in settings.trash_time.strip().split(":"))
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
+def _wellness_call_pending(now):
+    """True if ANY open wellness check still has a call queued (next_attempt_at). Used to
+    guarantee the trash call NEVER competes with a wellness call."""
+    for ci in storage.open_checkins():
+        if ci.get("source") in (None, "scheduled") and ci.get("next_attempt_at"):
+            return True
+    return False
+
+
+def _wellness_complete_for_trash(now):
+    """True only once today's noon WELLNESS sequence is fully finished: the noon check
+    exists, is no longer pending, has no queued call, and no other wellness call is queued.
+    This is the gate that keeps the trash sequence from ever interfering with wellness."""
+    anchor = _trash_anchor_dt(now)
+    if anchor > now:
+        return False
+    nid = storage.checkin_exists_for(anchor.isoformat())
+    if not nid:
+        return False
+    noon = storage.get_checkin(nid)
+    if not noon or noon.get("final_status") == CheckinStatus.PENDING or noon.get("next_attempt_at"):
+        return False
+    return not _wellness_call_pending(now)
+
+
+def _trash_voice_groups():
+    yes_ph = settings.voice_trash_yes_phrases
+    no_ph = settings.voice_trash_no_phrases
+    if yes_ph and no_ph:
+        return [{"digit": settings.trash_yes_digit, "phrases": yes_ph},
+                {"digit": settings.trash_no_digit, "phrases": no_ph}]
+    return None
+
+
+def _trash_standalone_primary():
+    """The single yes/no question for the standalone trash call (replaces the wellness menu)."""
+    return {
+        "message": settings.trash_standalone_message,
+        "reprompt": settings.trash_standalone_reprompt,
+        "accept_digits": [settings.trash_yes_digit, settings.trash_no_digit],
+        "confirm_digit": settings.trash_yes_digit,
+        "ack": {settings.trash_yes_digit: settings.trash_ack_yes,
+                settings.trash_no_digit: settings.trash_ack_no},
+        "voice_groups": _trash_voice_groups(),
+    }
+
+
+def _trash_darcee_buttons(checkin_id):
+    """Yes/No buttons for Darcee to record Mom's trash answer after following up herself."""
+    return {"inline_keyboard": [[
+        {"text": "✅ Yes — goes out", "callback_data": f"guardian_trash_set:{checkin_id}:yes"},
+        {"text": "❌ No", "callback_data": f"guardian_trash_set:{checkin_id}:no"}]]}
+
+
+def _create_trash_checkin(now):
+    """Open today's standalone trash check: Alexa grace window first, then one call."""
+    cid = storage.create_checkin(now.isoformat())
+    grace = settings.alexa_grace_minutes
+    first_call = now + timedelta(minutes=grace)
+    storage.update_checkin(cid, source="trash", next_attempt_at=first_call.isoformat())
+    storage.add_audit("trash_seq_open", "guardian", None, cid, f"grace={grace}m")
+    pickup_name = settings.trash_pickup_day or (now + timedelta(days=1)).strftime("%A")
+    if grace:
+        telegram_notify.send(
+            f"🗑️ Angel: opening the trash check for {pickup_name}'s pickup. Mom can tell Alexa her "
+            f"answer — Angel will call by {_label(first_call.isoformat())} if she hasn't.")
+    return cid
+
+
+def _run_trash_call(tci):
+    """Place the ONE standalone trash call (no wellness menu). Records yes/no, or starts the
+    callback window if she didn't give an answer."""
+    provider = get_provider()
+    if settings.mom_extension:
+        ttype, tval = TargetType.EXTENSION, settings.mom_extension
+    else:
+        ttype, tval = TargetType.CELL, settings.mom_cell
+    masked = mask_phone(tval)
+    attempt_id = storage.create_attempt(tci["id"], tci["scheduled_time"], 1, ttype, masked, provider.name)
+    telegram_notify.send(f"📞 Angel: calling Mom with the trash question ({ttype} {masked}).")
+    res = provider.place_call(ttype, tval, primary=_trash_standalone_primary())
+    storage.finish_attempt(attempt_id, res.status, res.error)
+    storage.update_checkin(tci["id"], attempt_count=1, next_attempt_at=None)
+
+    digit = str((res.extra or {}).get("primary_digit") or "")
+    answer = ("yes" if digit == settings.trash_yes_digit
+              else ("no" if digit == settings.trash_no_digit else None))
+    if answer:
+        storage.update_checkin(tci["id"], trash_result=answer, final_status=CheckinStatus.ANSWERED)
+        storage.add_audit("trash_call_answered", "mom (call)", None, tci["id"], answer)
+        _notify_trash(storage.get_checkin(tci["id"]), answer)
+    else:
+        # No yes/no — give Mom the callback window before asking Darcee to follow up.
+        storage.update_checkin(tci["id"], last_reminder_at=_now().isoformat())
+        storage.add_audit("trash_call_unanswered", "guardian", None, tci["id"], res.status)
+        telegram_notify.send(
+            f"🗑️ Angel called Mom about the trash but didn't get a yes or no ({res.status}). "
+            f"Giving her {settings.trash_callback_window_minutes} min to call back before I ask you to follow up.")
+
+
+def _alert_darcee_trash(tci):
+    """Callback window elapsed with no answer → ask Darcee to follow up + set the answer."""
+    storage.update_checkin(tci["id"], escalation_sent=1)
+    storage.add_audit("trash_ask_darcee", "guardian", None, tci["id"], None)
+    tomorrow = _trash_tomorrow(tci)
+    telegram_notify.send(
+        "🗑️ Trash — needs your follow-up\n\n"
+        f"I couldn't get a yes or no from Mom about {tomorrow}'s pickup (one call + a "
+        f"{settings.trash_callback_window_minutes}-minute window). Please check with her, then tap "
+        "her answer below — I'll let your sister know and she'll confirm she got it.",
+        reply_markup=_trash_darcee_buttons(tci["id"]))
+
+
+def set_trash_answer(checkin_id, answer, by="darcee", chat=None):
+    """Darcee taps Yes/No to record Mom's trash answer after following up. Reuses the same
+    sister-ack notification as a Mom-given answer. Idempotent; won't override a real answer."""
+    ci = storage.get_checkin(checkin_id) if checkin_id else None
+    if not ci or ci.get("source") != "trash":
+        return None, False
+    if ci.get("trash_result"):
+        return ci, False  # already answered (e.g. Mom called back) — don't override
+    if answer not in ("yes", "no"):
+        return ci, False
+    storage.update_checkin(checkin_id, trash_result=answer, final_status=CheckinStatus.ANSWERED)
+    storage.add_audit("trash_set_darcee", by, chat, checkin_id, answer)
+    _notify_trash(storage.get_checkin(checkin_id), answer)
+    return storage.get_checkin(checkin_id), True
+
+
+def handle_alexa_trash(answer):
+    """Mom answers the trash question via Alexa during the grace window (or anytime it's open).
+    Records the answer, cancels the pending call, and fires the sister-ack notification."""
+    now = _now()
+    tci = _today_trash_checkin(now)
+    if not tci or tci.get("trash_result") or tci.get("final_status") != CheckinStatus.PENDING:
+        return {"ok": False, "error": "no open trash question"}
+    if answer not in ("yes", "no"):
+        return {"ok": False, "error": "unknown answer"}
+    storage.update_checkin(tci["id"], trash_result=answer, final_status=CheckinStatus.ANSWERED,
+                           next_attempt_at=None)
+    storage.set_meta("last_callback_time", now.isoformat())
+    storage.set_meta("last_callback_outcome", f"alexa_trash_{answer}")
+    storage.add_audit("alexa_trash", "mom (alexa)", None, tci["id"], answer)
+    _notify_trash(storage.get_checkin(tci["id"]), answer)
+    return {"ok": True, "answer": answer, "checkin_id": tci["id"]}
+
+
+def _tick_trash(now):
+    """Drive the standalone trash sequence. Runs AFTER wellness in each tick and only ever
+    places its call once wellness is fully done — wellness always wins."""
+    if not (settings.trash_enabled and settings.trash_standalone):
+        return
+    if not _active(now) or is_paused_today(now):
+        return
+    if now.strftime("%A").lower() != settings.trash_day.strip().lower():
+        return
+    tci = _today_trash_checkin(now)
+    if tci is None:
+        if _wellness_complete_for_trash(now):
+            _create_trash_checkin(now)
+        return
+    if tci.get("trash_result") or tci.get("final_status") != CheckinStatus.PENDING:
+        return  # already answered/closed
+    # Phase 1: waiting for Alexa, then place the ONE call when the grace window elapses.
+    if (tci.get("attempt_count") or 0) == 0:
+        nxt = tci.get("next_attempt_at")
+        try:
+            due = bool(nxt) and datetime.fromisoformat(nxt) <= now
+        except ValueError:
+            due = False
+        if due and not _wellness_call_pending(now):
+            _run_trash_call(tci)
+        return
+    # Phase 2: call placed, no answer → wait the callback window, then alert Darcee once.
+    if tci.get("escalation_sent"):
+        return
+    base = tci.get("last_reminder_at")
+    try:
+        ready = (now - datetime.fromisoformat(base)) >= timedelta(minutes=settings.trash_callback_window_minutes)
+    except (ValueError, TypeError):
+        ready = bool(base)
+    if ready:
+        _alert_darcee_trash(tci)
+
+
 _DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -208,7 +425,7 @@ def trash_status(now=None):
     if ci and ci.get("trash_result"):
         try:
             sched = datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz())
-            pickup = sched + timedelta(days=1)
+            pickup = _pickup_after(sched)
         except (ValueError, TypeError):
             pickup = None
         out["answer"] = ci["trash_result"]
@@ -235,7 +452,12 @@ def _run_attempt(checkin):
     telegram_notify.send(f"📞 Guardian: calling Mom — attempt {attempt_number} ({ttype} {masked}).")
 
     # Trash-day rider: only ask if it's the configured check AND she hasn't answered it yet.
-    second_q = _trash_question() if (_is_trash_check(checkin) and not checkin.get("trash_result")) else None
+    # ANGEL-14: when the STANDALONE trash sequence is enabled, the wellness call never carries
+    # the rider — trash gets its own separate call after wellness finishes.
+    second_q = (_trash_question()
+                if (not settings.trash_standalone and _is_trash_check(checkin)
+                    and not checkin.get("trash_result"))
+                else None)
 
     res = provider.place_call(ttype, tval, second_question=second_q)
     storage.finish_attempt(attempt_id, res.status, res.error)
@@ -518,6 +740,12 @@ def _pending_trash_callback(now=None):
     now = now or _now()
     if not settings.trash_enabled:
         return None
+    # ANGEL-14: standalone trash check open today (Mom calling back can still answer it).
+    if settings.trash_standalone:
+        tci = _today_trash_checkin(now)
+        if tci and not tci.get("trash_result") and tci.get("final_status") == CheckinStatus.PENDING:
+            return tci
+        return None
     start, end = _today_bounds(now)
     for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
         if ci.get("source") == "inbound":
@@ -556,7 +784,8 @@ def record_callback_followup(checkin_id, key, digit=None):
     digit = str(digit) if digit not in (None, "") else None
     if key == "trash":
         ci = storage.get_checkin(int(checkin_id)) if checkin_id else None
-        if not ci or not _is_trash_check(ci):
+        # Accept the legacy rider check OR the ANGEL-14 standalone trash check (source='trash').
+        if not ci or not (_is_trash_check(ci) or ci.get("source") == "trash"):
             return {"ok": False, "key": key, "error": "not a trash check"}
         if ci.get("trash_result"):
             return {"ok": True, "key": key, "trash_outcome": ci["trash_result"], "already": True}
@@ -567,6 +796,9 @@ def record_callback_followup(checkin_id, key, digit=None):
         else:
             answer, tout = "unknown", "trash_unknown"
         storage.update_checkin(ci["id"], trash_result=answer)
+        # The standalone trash row IS the trash item, so its own status closes out here.
+        if ci.get("source") == "trash" and answer in ("yes", "no"):
+            storage.update_checkin(ci["id"], final_status=CheckinStatus.ANSWERED, next_attempt_at=None)
         storage.add_audit("callback_trash", "mom (callback)", None, ci["id"], tout)
         # yes/no reuse the SAME notification the original Monday call would have sent
         # (🗑️ alert + sister + "Got it" button). 'unknown' is logged only — never blocks wellness.
@@ -726,6 +958,8 @@ def _tick():
                     _run_attempt(storage.get_checkin(cid))
     # 2) process due retries on open check-ins (and the Option-B deferred first call)
     for ci in storage.open_checkins():
+        if ci.get("source") == "trash":
+            continue  # ANGEL-14: standalone trash rows are driven by _tick_trash, not the wellness ladder
         nxt = ci.get("next_attempt_at")
         if not nxt:
             continue
@@ -748,7 +982,9 @@ def _tick():
                     storage.update_checkin(ci["id"], next_attempt_at=None)
                 continue
         _run_attempt(ci)
-    # 3) re-nudge un-acknowledged call-back requests (ANGEL-06)
+    # 3) ANGEL-14: drive the standalone trash sequence (only ever after wellness is done)
+    _tick_trash(now)
+    # 4) re-nudge un-acknowledged call-back requests (ANGEL-06)
     _process_ack_reminders(now)
 
 

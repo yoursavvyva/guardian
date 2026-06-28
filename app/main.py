@@ -138,6 +138,10 @@ ALEXA_LAUNCH = ("Hi Mom, it's Angel, just checking in. If you're okay, say: I'm 
 ALEXA_OKAY = "Thank you, Mom. I'm glad you're okay. Have a wonderful day."
 ALEXA_NEEDS = "Thank you, Mom. I'll let Darcee know you'd like a call. Talk to you later."
 ALEXA_HELP = "Say: I'm okay. Or say: call me."
+# ANGEL-14: spoken confirmations when Mom answers the trash question via Alexa.
+ALEXA_TRASH_YES = "Thank you, Mom. I'll let Darcee know the trash needs to go out tomorrow."
+ALEXA_TRASH_NO = "Okay, Mom. No trash tomorrow. Thank you."
+ALEXA_TRASH_NONE = "There's no trash question open right now, Mom. Thank you."
 ALEXA_BYE = "Okay, Mom. Take care."
 ALEXA_ERROR = ("I'm sorry, something went wrong on my end. "
                "Please try again, or wait for Angel's phone call.")
@@ -181,6 +185,13 @@ def handle_alexa_skill(body):
         if name == "NeedDarceeIntent":
             out = scheduler.handle_alexa_wellness("needs_darcee")
             return _alexa_say(ALEXA_NEEDS if out.get("ok") else ALEXA_ERROR)
+        # ANGEL-14: trash answers via Alexa (only meaningful while a trash question is open).
+        if name == "TrashYesIntent":
+            out = scheduler.handle_alexa_trash("yes")
+            return _alexa_say(ALEXA_TRASH_YES if out.get("ok") else ALEXA_TRASH_NONE)
+        if name == "TrashNoIntent":
+            out = scheduler.handle_alexa_trash("no")
+            return _alexa_say(ALEXA_TRASH_NO if out.get("ok") else ALEXA_TRASH_NONE)
         if name in ("AMAZON.CancelIntent", "AMAZON.StopIntent"):
             return _alexa_say(ALEXA_BYE)
         # Help / NavigateHome / anything unrecognized → re-prompt, keep listening.

@@ -332,15 +332,28 @@ class Settings:
         return env("GUARDIAN_TRASH_TIME", "12:00")
 
     @property
+    def trash_pickup_day(self):
+        # The ACTUAL garbage pickup day (full English name, e.g. "Tuesday"). The question +
+        # all alerts name this day so the wording is correct even when Mom is asked days
+        # ahead (e.g. asked Sunday for a Tuesday pickup). Empty = fall back to "tomorrow".
+        return env("GUARDIAN_TRASH_PICKUP_DAY", "").strip()
+
+    @property
+    def _trash_when(self):
+        # Phrase for when the trash goes out: "on Tuesday" if a pickup day is set, else "tomorrow".
+        d = self.trash_pickup_day
+        return ("on " + d) if d else "tomorrow"
+
+    @property
     def trash_message(self):
         return env("GUARDIAN_TRASH_MESSAGE",
-                   "One more thing, Mom. Does the trash need to go out tomorrow? "
+                   f"One more thing, Mom. Does the trash need to go out {self._trash_when}? "
                    "Press 1 for yes. Press 2 for no.")
 
     @property
     def trash_reprompt(self):
         return env("GUARDIAN_TRASH_REPROMPT",
-                   "I didn't catch that. If the trash needs to go out tomorrow, press 1. "
+                   f"I didn't catch that. If the trash needs to go out {self._trash_when}, press 1. "
                    "If not, press 2.")
 
     @property
@@ -354,12 +367,12 @@ class Settings:
     @property
     def trash_ack_yes(self):
         return env("GUARDIAN_TRASH_ACK_YES",
-                   "Thank you, Mom. I'll let Darcee know the trash needs to go out tomorrow.")
+                   f"Thank you, Mom. I'll let Darcee know the trash needs to go out {self._trash_when}.")
 
     @property
     def trash_ack_no(self):
         return env("GUARDIAN_TRASH_ACK_NO",
-                   "Okay, Mom. No trash tomorrow. Thank you.")
+                   f"Okay, Mom. No trash {self._trash_when}. Thank you.")
 
     @property
     def trash_extra_chat_ids(self):
@@ -372,6 +385,38 @@ class Settings:
     def mock_second_digit(self):
         # Test-only: which digit the mock provider simulates for the trash question.
         return env("GUARDIAN_MOCK_SECOND_DIGIT", "1")
+
+    # ---- ANGEL-14: STANDALONE trash sequence (its own call, separate from wellness) ----
+    @property
+    def trash_standalone(self):
+        # TRUE: the trash question is NOT a rider on the noon wellness call. Instead, AFTER
+        # the noon wellness sequence fully finishes, Guardian runs a SEPARATE trash sequence:
+        # Alexa grace window -> ONE Angel call -> callback window -> Darcee yes/no buttons.
+        # Default FALSE keeps the legacy rider behaviour until explicitly enabled (safe rollout).
+        return env("GUARDIAN_TRASH_STANDALONE", "false").lower() == "true"
+
+    @property
+    def trash_standalone_message(self):
+        # Primary question for the standalone trash CALL (greets Mom, then asks). Distinct from
+        # trash_message, which is phrased as a "one more thing" rider after the wellness menu.
+        return env("GUARDIAN_TRASH_STANDALONE_MESSAGE",
+                   "Hi Mom, it's Angel with one quick question. Does the trash need to go out "
+                   f"{self._trash_when}? Press 1 for yes. Press 2 for no.")
+
+    @property
+    def trash_standalone_reprompt(self):
+        return env("GUARDIAN_TRASH_STANDALONE_REPROMPT",
+                   f"I didn't catch that. If the trash needs to go out {self._trash_when}, press 1. "
+                   "If not, press 2.")
+
+    @property
+    def trash_callback_window_minutes(self):
+        # After Angel's single trash call goes unanswered, how long to wait for Mom to call
+        # back (or use Alexa) before alerting Darcee with yes/no buttons to follow up herself.
+        try:
+            return int(env("GUARDIAN_TRASH_CALLBACK_WINDOW_MINUTES", "30"))
+        except ValueError:
+            return 30
 
     # ---- ANGEL-09: Alexa wellness channel ----
     @property
