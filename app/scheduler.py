@@ -146,7 +146,6 @@ def _trash_ack_button(checkin_id):
 def _notify_trash(checkin, answer):
     """Alert Darcee + extra family chat IDs (sister) of Mom's trash answer — YES or NO —
     each with a 'Got it' button so the sister acknowledges she received it."""
-    label = _label(checkin["scheduled_time"])
     tomorrow = _trash_tomorrow(checkin)
     if answer == "yes":
         line = f"Mom says the trash NEEDS to go out for {tomorrow}. 🗑️"
@@ -154,12 +153,16 @@ def _notify_trash(checkin, answer):
         line = f"Mom says the trash does NOT need to go out for {tomorrow}."
     else:
         line = f"Mom's trash answer for {tomorrow}: {answer}."
-    msg = ("🗑️ Trash Day\n\n" + line + f"\n(from the {label} check-in)\n\n"
-           "Tap below to confirm you got this.")
+    msg = ("🗑️ Trash Day\n\n" + line + "\n\nTap below to confirm you got this.")
     btn = _trash_ack_button(checkin["id"])
-    telegram_notify.send(msg, reply_markup=btn)
-    for cid in settings.trash_extra_chat_ids:
-        telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
+    # ANGEL-15: the SISTER handles the trash, so SHE gets the answer (not Darcee). Darcee gets a
+    # single confirmation only once the sister taps "Got it" (acknowledge_trash). If no sister is
+    # configured, fall back to Darcee so the answer is never dropped silently.
+    if settings.trash_extra_chat_ids:
+        for cid in settings.trash_extra_chat_ids:
+            telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
+    else:
+        telegram_notify.send(msg, reply_markup=btn)
 
 
 def acknowledge_trash(checkin_id, by="sister", by_chat=None):
@@ -259,11 +262,8 @@ def _create_trash_checkin(now):
     first_call = now + timedelta(minutes=grace)
     storage.update_checkin(cid, source="trash", next_attempt_at=first_call.isoformat())
     storage.add_audit("trash_seq_open", "guardian", None, cid, f"grace={grace}m")
-    pickup_name = settings.trash_pickup_day or (now + timedelta(days=1)).strftime("%A")
-    if grace:
-        telegram_notify.send(
-            f"🗑️ Angel: opening the trash check for {pickup_name}'s pickup. Mom can tell Alexa her "
-            f"answer — Angel will call by {_label(first_call.isoformat())} if she hasn't.")
+    # ANGEL-15: no Darcee ping for the routine open/call play-by-play — she's only pinged when she
+    # needs to act (Mom didn't answer / sister ignored a YES) or when it's confirmed (sister acked).
     return cid
 
 
@@ -277,7 +277,6 @@ def _run_trash_call(tci):
         ttype, tval = TargetType.CELL, settings.mom_cell
     masked = mask_phone(tval)
     attempt_id = storage.create_attempt(tci["id"], tci["scheduled_time"], 1, ttype, masked, provider.name)
-    telegram_notify.send(f"📞 Angel: calling Mom with the trash question ({ttype} {masked}).")
     res = provider.place_call(ttype, tval, primary=_trash_standalone_primary())
     storage.finish_attempt(attempt_id, res.status, res.error)
     storage.update_checkin(tci["id"], attempt_count=1, next_attempt_at=None)
@@ -290,12 +289,10 @@ def _run_trash_call(tci):
         storage.add_audit("trash_call_answered", "mom (call)", None, tci["id"], answer)
         _notify_trash(storage.get_checkin(tci["id"]), answer)
     else:
-        # No yes/no — give Mom the callback window before asking Darcee to follow up.
+        # No yes/no — give Mom the callback window before asking Darcee to follow up (silent;
+        # Darcee gets the actionable Yes/No buttons when the window elapses).
         storage.update_checkin(tci["id"], last_reminder_at=_now().isoformat())
         storage.add_audit("trash_call_unanswered", "guardian", None, tci["id"], res.status)
-        telegram_notify.send(
-            f"🗑️ Angel called Mom about the trash but didn't get a yes or no ({res.status}). "
-            f"Giving her {settings.trash_callback_window_minutes} min to call back before I ask you to follow up.")
 
 
 def _alert_darcee_trash(tci):
@@ -941,6 +938,8 @@ def _process_trash_ack_reminders(now=None):
     interval = timedelta(minutes=settings.trash_ack_reminder_minutes)
     now_utc = datetime.now(timezone.utc)
     for ci in storage.unacked_trash():
+        if ci.get("trash_result") != "yes":
+            continue  # only chase a "yes" — a "no" needs no action, so no re-nudges
         # stop chasing once the pickup day has passed (a stale answer needs no ack)
         try:
             pickup = _pickup_after(datetime.fromisoformat(ci["scheduled_time"]).astimezone(_tz()))
@@ -955,14 +954,30 @@ def _process_trash_ack_reminders(now=None):
             since = interval  # malformed → treat as due
         if since < interval:
             continue
-        verb = "NEEDS to go out" if ci.get("trash_result") == "yes" else "does NOT need to go out"
-        msg = ("🗑️ Reminder — please confirm you saw this\n\n"
-               f"Mom said the trash {verb} for {_trash_tomorrow(ci)}.\n"
-               "Tap below so Darcee knows you got it.")
+        pickup_name = _trash_tomorrow(ci)
+        msg = ("🗑️ Reminder — please confirm\n\n"
+               f"Mom said the trash NEEDS to go out for {pickup_name}.\n"
+               "Tap below so Darcee knows you've got it.")
         btn = _trash_ack_button(ci["id"])
         for cid in settings.trash_extra_chat_ids:
             telegram_notify.send(msg, reply_markup=btn, chat_id=cid)
         storage.mark_reminded(ci["id"])
+        # Sister keeps ignoring a trash-goes-out answer → escalate to Darcee ONCE so she can
+        # make sure it actually goes out. (escalation_sent doubles as the "Darcee is involved"
+        # flag — already set when Mom didn't answer and Darcee set the answer herself.)
+        thresh = settings.trash_escalate_after_nudges
+        fresh = storage.get_checkin(ci["id"])
+        if (thresh > 0 and fresh and (fresh.get("reminder_count") or 0) >= thresh
+                and not fresh.get("escalation_sent")):
+            storage.update_checkin(ci["id"], escalation_sent=1)
+            storage.add_audit("trash_escalate_darcee", "guardian", None, ci["id"],
+                              f"reminders={fresh.get('reminder_count')}")
+            telegram_notify.send(
+                "🗑️ Heads up — your sister hasn't confirmed the trash\n\n"
+                f"Mom said the trash NEEDS to go out for {pickup_name}, but your sister hasn't "
+                f"tapped Got it after {fresh.get('reminder_count')} reminders. You may want to make "
+                "sure it goes out. Tap below once it's handled.",
+                reply_markup=_trash_ack_button(ci["id"]))
 
 
 # ---- tick ----

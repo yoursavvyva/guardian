@@ -421,11 +421,21 @@ class Settings:
     @property
     def trash_ack_reminder_minutes(self):
         # Re-nudge the SISTER (trash_extra_chat_ids only — never Darcee) this often until she
-        # taps "Got it" on a trash answer, or the pickup day passes. 0 = no re-nudge. Quiet overnight.
+        # taps "Got it" on a YES (trash-goes-out) answer, or the pickup day passes. NO re-nudges
+        # for "no" (nothing to do). 0 = no re-nudge. Quiet overnight.
         try:
             return int(env("GUARDIAN_TRASH_ACK_REMINDER_MINUTES", "120"))
         except ValueError:
             return 120
+
+    @property
+    def trash_escalate_after_nudges(self):
+        # If the sister still hasn't confirmed a YES after this many un-acked re-nudges, escalate
+        # to Darcee ONCE so she can make sure the trash actually goes out. 0 = never escalate.
+        try:
+            return int(env("GUARDIAN_TRASH_ESCALATE_AFTER_NUDGES", "3"))
+        except ValueError:
+            return 3
 
     # ---- ANGEL-09: Alexa wellness channel ----
     @property
