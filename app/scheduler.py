@@ -143,16 +143,18 @@ def _trash_ack_button(checkin_id):
     return {"inline_keyboard": [[{"text": "✅ Got it", "callback_data": f"guardian_trash_ack:{checkin_id}"}]]}
 
 
-def _notify_trash(checkin, answer):
+def _notify_trash(checkin, answer, manual=False):
     """Alert Darcee + extra family chat IDs (sister) of Mom's trash answer — YES or NO —
-    each with a 'Got it' button so the sister acknowledges she received it."""
+    each with a 'Got it' button so the sister acknowledges she received it.
+    manual=True: Darcee sent this herself from the Angel menu, so it isn't quoted as Mom's answer."""
     tomorrow = _trash_tomorrow(checkin)
+    who = "Darcee says" if manual else "Mom says"
     if answer == "yes":
-        line = f"Mom says the trash NEEDS to go out for {tomorrow}. 🗑️"
+        line = f"{who} the trash NEEDS to go out for {tomorrow}. 🗑️"
     elif answer == "no":
-        line = f"Mom says the trash does NOT need to go out for {tomorrow}."
+        line = f"{who} the trash does NOT need to go out for {tomorrow}."
     else:
-        line = f"Mom's trash answer for {tomorrow}: {answer}."
+        line = f"{'Darcee' if manual else 'Mom'}'s trash answer for {tomorrow}: {answer}."
     msg = ("🗑️ Trash Day\n\n" + line + "\n\nTap below to confirm you got this.")
     btn = _trash_ack_button(checkin["id"])
     # ANGEL-15: the SISTER handles the trash, so SHE gets the answer (not Darcee). Darcee gets a
@@ -322,6 +324,43 @@ def set_trash_answer(checkin_id, answer, by="darcee", chat=None):
     storage.add_audit("trash_set_darcee", by, chat, checkin_id, answer)
     _notify_trash(storage.get_checkin(checkin_id), answer)
     return storage.get_checkin(checkin_id), True
+
+
+def _today_manual_trash(now=None):
+    """Today's manually-triggered trash record (source='trash_manual'), or None."""
+    now = now or _now()
+    start, end = _today_bounds(now)
+    for ci in storage.checkins_between(start.isoformat(), end.isoformat(), limit=50):
+        if ci.get("source") == "trash_manual":
+            return ci
+    return None
+
+
+def manual_trash_answer(answer, by="darcee", chat=None):
+    """ANGEL-16: Darcee triggers the trash alert herself from the Angel menu — any day, no call
+    to Mom (e.g. Mom pressed the wrong button, or Darcee already knows).
+
+    Reuses today's automated trash record ONLY once that record is closed; if the automated
+    sequence is still pending, it is left completely alone and a separate source='trash_manual'
+    record is used instead — so this can never cancel or alter a call to Mom. The sister gets the
+    same alert + 'Got it' button, and the existing YES-chase/escalation applies unchanged."""
+    if answer not in ("yes", "no"):
+        return None, False
+    now = _now()
+    ci = _today_trash_checkin(now)
+    if ci is None or ci.get("final_status") == CheckinStatus.PENDING:
+        # automated row absent or still in flight → never touch it; use a manual record
+        ci = _today_manual_trash(now)
+        if ci is None:
+            cid = storage.create_checkin(now.isoformat())
+            storage.update_checkin(cid, source="trash_manual", next_attempt_at=None)
+            ci = storage.get_checkin(cid)
+    storage.update_checkin(ci["id"], trash_result=answer, final_status=CheckinStatus.ANSWERED,
+                           trash_acknowledged=0, escalation_sent=0, next_attempt_at=None)
+    storage.add_audit("trash_manual_darcee", by, chat, ci["id"], answer)
+    ci = storage.get_checkin(ci["id"])
+    _notify_trash(ci, answer, manual=True)
+    return ci, True
 
 
 def handle_alexa_trash(answer):

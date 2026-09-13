@@ -88,6 +88,7 @@ def _panel_keyboard():
         [{"text": "📞 I called Mom", "callback_data": f"guardian_ack:{nd_id}"}],
         [{"text": "☎️ Call Mom now", "callback_data": "guardian_callnow"}],
     ]
+    rows.append([{"text": "🗑️ Trash — tell sister", "callback_data": "guardian_trash_menu"}])
     rows.append([{"text": "▶️ Resume checks", "callback_data": "guardian_resume"}] if paused
                 else [{"text": "⏸ Pause checks today", "callback_data": "guardian_pause"}])
     rows.append([{"text": "📊 Status", "callback_data": "guardian_status"}])
@@ -146,6 +147,35 @@ def _handle_trash_set(scheduler, data, cb_id, msg, chat, who):
         already = bool(ci and ci.get("trash_result"))
         _answer(cb_id, f"Already answered ({ci.get('trash_result','').upper()}). 👍" if already
                 else "Couldn't find that trash question.", alert=True)
+
+
+def _handle_trash_menu(scheduler, data, cb_id, msg, chat, who):
+    """Darcee-only: send the trash answer to her sister herself, any day, without calling Mom.
+    guardian_trash_menu → Yes/No/Cancel → guardian_trash_manual:<yes|no>."""
+    if data == "guardian_trash_menu":
+        _answer(cb_id, "Does the trash go out?")
+        if msg.get("message_id"):
+            _edit(chat, msg["message_id"],
+                  "🗑️ Tell your sister about the trash\n\nThis messages her right now (no call to Mom).",
+                  {"inline_keyboard": [
+                      [{"text": "✅ Yes — goes out", "callback_data": "guardian_trash_manual:yes"},
+                       {"text": "❌ No", "callback_data": "guardian_trash_manual:no"}],
+                      [{"text": "✖️ Cancel", "callback_data": "guardian_trash_manual:cancel"}]]})
+        return
+    answer = data.split(":", 1)[1] if ":" in data else ""
+    if answer == "cancel":
+        _answer(cb_id, "Cancelled.")
+        if msg.get("message_id"):
+            _edit(chat, msg["message_id"], "🗑️ Cancelled — nothing sent.")
+        return
+    ci, changed = scheduler.manual_trash_answer(answer, by=f"{who} (telegram)", chat=chat)
+    if changed:
+        verb = "goes out" if answer == "yes" else "does NOT go out"
+        _answer(cb_id, f"✅ Sent: trash {verb}. Your sister will confirm she got it.", alert=True)
+        if msg.get("message_id"):
+            _edit(chat, msg["message_id"], f"🗑️ Sent to your sister: trash {verb}.")
+    else:
+        _answer(cb_id, "Couldn't send that — try again.", alert=True)
 
 
 def _handle_called_mom(scheduler, data, cb_id, msg, chat):
@@ -237,6 +267,8 @@ def _handle_callback(cb):
     if not _is_darcee(chat):
         return _answer(cb_id, "Not authorized.")
 
+    if data == "guardian_trash_menu" or data.startswith("guardian_trash_manual:"):
+        return _handle_trash_menu(scheduler, data, cb_id, msg, chat, who)
     if data.startswith("guardian_trash_set:"):
         return _handle_trash_set(scheduler, data, cb_id, msg, chat, who)
     if data.startswith("guardian_ok:"):

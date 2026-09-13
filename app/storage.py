@@ -297,7 +297,8 @@ def unacked_trash():
     with _LOCK, _conn() as c:
         rows = c.execute(
             "SELECT * FROM guardian_checkins "
-            "WHERE source='trash' AND trash_result IN ('yes','no') AND COALESCE(trash_acknowledged,0)=0 "
+            "WHERE source IN ('trash','trash_manual') AND trash_result IN ('yes','no') "
+            "AND COALESCE(trash_acknowledged,0)=0 "
             "ORDER BY scheduled_time ASC"
         ).fetchall()
         return [dict(r) for r in rows]
